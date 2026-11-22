@@ -45,6 +45,8 @@ import java.util.*;
  * A writer for Bedrock levels.
  */
 public class BedrockLevelWriter implements LevelWriter, BedrockReaderWriter {
+    protected final List<ChunkerPortal> writtenPortals = new ArrayList<>();
+    protected final it.unimi.dsi.fastutil.longs.LongSet writtenMapIds = new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
     /**
      * Custom World string used for void worlds.
      */
@@ -213,6 +215,12 @@ public class BedrockLevelWriter implements LevelWriter, BedrockReaderWriter {
     }
 
     @Override
+    public void appendLevel(ChunkerLevel chunkerLevel) {
+        Task.asyncConsume("Writing Saved Maps", TaskWeight.NORMAL, this::writeMaps, chunkerLevel);
+        Task.asyncConsume("Writing Portals", TaskWeight.NORMAL, this::writePortals, chunkerLevel);
+    }
+
+    @Override
     public void flushLevel() {
         try {
             writeBiomeList();
@@ -293,6 +301,18 @@ public class BedrockLevelWriter implements LevelWriter, BedrockReaderWriter {
             return;
         }
 
+        // Ensure map IDs are unique across every level written by this writer (relevant when merging worlds)
+        synchronized (writtenMapIds) {
+            for (ChunkerMap map : chunkerLevel.getMaps()) {
+                long id = map.getId();
+                while (!writtenMapIds.add(id)) {
+                    // Bedrock map IDs are arbitrary longs, pick the next free negative ID like the game does
+                    id = id == Long.MIN_VALUE ? -1 : id - 1;
+                }
+                map.setId(id);
+            }
+        }
+
         // Write maps
         Task.asyncConsumeForEach("Writing Saved Map", TaskWeight.NORMAL, this::writeMap, chunkerLevel.getMaps());
     }
@@ -362,14 +382,20 @@ public class BedrockLevelWriter implements LevelWriter, BedrockReaderWriter {
      * @throws Exception if it failed to write the portal data.
      */
     protected void writePortals(ChunkerLevel chunkerLevel) throws Exception {
-        if (chunkerLevel.getPortals().isEmpty()) {
+        // Portals are a single record, so keep every portal written so far (merged levels append to this)
+        List<ChunkerPortal> portals;
+        synchronized (writtenPortals) {
+            writtenPortals.addAll(chunkerLevel.getPortals());
+            portals = new ArrayList<>(writtenPortals);
+        }
+        if (portals.isEmpty()) {
             return;
         }
 
         // Write portals
         CompoundTag entry = new CompoundTag(1);
-        ListTag<CompoundTag, Map<String, Tag<?>>> portalRecords = new ListTag<>(TagType.COMPOUND, chunkerLevel.getPortals().size());
-        for (ChunkerPortal portal : chunkerLevel.getPortals()) {
+        ListTag<CompoundTag, Map<String, Tag<?>>> portalRecords = new ListTag<>(TagType.COMPOUND, portals.size());
+        for (ChunkerPortal portal : portals) {
             CompoundTag record = new CompoundTag(7);
             record.put("DimId", portal.getDimension().getBedrockID());
             record.put("Span", portal.getWidth());

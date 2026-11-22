@@ -40,6 +40,7 @@ import java.util.Set;
  */
 public class JavaLevelWriter implements LevelWriter, JavaReaderWriter {
     protected final Long2ShortMap oldToNewMapIDs = new Long2ShortOpenHashMap();
+    protected short nextMapId = 0;
     protected final File outputFolder;
     protected final Version version;
     protected final Converter converter;
@@ -73,21 +74,36 @@ public class JavaLevelWriter implements LevelWriter, JavaReaderWriter {
         outputFolder.mkdirs();
 
         // Normalise map IDs (they need to be numerical for Java)
-        short id = 0;
-        for (ChunkerMap map : chunkerLevel.getMaps()) {
-            // Set new ID
-            oldToNewMapIDs.put(map.getId(), id);
-            map.setId(id);
-
-            // Increment ID
-            id++;
-        }
+        renumberMaps(chunkerLevel);
 
         // Save level data
         Task.asyncConsume("Writing Level Data", TaskWeight.NORMAL, this::writeLevelData, chunkerLevel);
 
         // Create a new world writer with the created worldData
         return createWorldWriter();
+    }
+
+    /**
+     * Re-number the maps of a level so they follow on from any previously written maps.
+     *
+     * @param chunkerLevel the level containing the maps.
+     */
+    protected void renumberMaps(ChunkerLevel chunkerLevel) {
+        for (ChunkerMap map : chunkerLevel.getMaps()) {
+            // Set new ID
+            oldToNewMapIDs.put(map.getId(), nextMapId);
+            map.setId(nextMapId);
+
+            // Increment ID
+            nextMapId++;
+        }
+    }
+
+    @Override
+    public void appendLevel(ChunkerLevel chunkerLevel) {
+        // Only maps are level-wide data which can be merged for Java, portals are stored as POI in the regions
+        renumberMaps(chunkerLevel);
+        Task.asyncConsume("Writing Saved Maps", TaskWeight.NORMAL, this::writeMaps, chunkerLevel);
     }
 
     /**

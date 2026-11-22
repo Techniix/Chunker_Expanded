@@ -36,6 +36,9 @@ Supported Formats:
     - 1.21.0 - 1.21.11
     - 26.1 - 26.4
 
+**World merging (Chunker Expanded):** combine many Java/Bedrock worlds of any version into one seamless world with
+`java -jar chunker-cli.jar merge -f JAVA_1_21_11 -o Merged WorldA WorldB ...` - see [MERGING.md](MERGING.md).
+
 **Microsoft Creator Docs:**
 https://learn.microsoft.com/en-us/minecraft/creator/documents/chunkeroverview?view=minecraft-bedrock-stable
 
