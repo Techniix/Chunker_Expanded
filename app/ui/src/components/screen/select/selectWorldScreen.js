@@ -3,6 +3,7 @@ import {BaseScreen} from "../baseScreen";
 import {ModeScreen} from "../mode/modeScreen";
 import api from "../../../api";
 import {Round2DP} from "../../progress";
+import {MergeScreen} from "../merge/mergeScreen";
 
 let jokes = [
     "How does Steve stay in shape? He runs around the block.",
@@ -333,6 +334,10 @@ export class SelectWorldScreen extends BaseScreen {
                             <button onClick={this.showFileBrowser} className="gray_box">
                                 Select archive
                                 <span>Supported types: .zip, .mcworld, .mctemplate, .tar</span>
+                            </button>
+                            <button onClick={() => this.app.setScreen(MergeScreen)} className="gray_box">
+                                Merge multiple worlds
+                                <span>Combine Java / Bedrock worlds of any version into one seamless world</span>
                             </button>
                         </div>
                     </div>

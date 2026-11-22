@@ -46,6 +46,19 @@ public interface LevelWriter extends LevelReaderWriter {
         return false;
     }
 
+    /**
+     * Append the level-wide data (such as maps and portals) of an additional level into a level which has already
+     * been written with {@link #writeLevel(ChunkerLevel)}. This is used when merging several worlds into one output,
+     * the base level settings / player are kept from the first level and this method should only add data which can
+     * co-exist (writers should re-number IDs where required so they don't collide).
+     *
+     * @param chunkerLevel the additional level.
+     * @throws Exception if it failed to append the data.
+     */
+    default void appendLevel(ChunkerLevel chunkerLevel) throws Exception {
+        // By default, nothing is appended
+    }
+
     @Nullable
     default PreTransformManager getPreTransformManager() {
         return null;

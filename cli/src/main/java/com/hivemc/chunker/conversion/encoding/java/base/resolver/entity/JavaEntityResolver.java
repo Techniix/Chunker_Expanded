@@ -1,5 +1,7 @@
 package com.hivemc.chunker.conversion.encoding.java.base.resolver.entity;
 
+import com.hivemc.chunker.conversion.intermediate.column.entity.MobEntity;
+import com.hivemc.chunker.conversion.encoding.java.base.resolver.entity.handlers.JavaMobEntityHandler;
 import com.hivemc.chunker.conversion.encoding.base.Version;
 import com.hivemc.chunker.conversion.encoding.base.resolver.entity.EmptyEntityHandler;
 import com.hivemc.chunker.conversion.encoding.base.resolver.entity.EntityResolver;
@@ -39,6 +41,13 @@ public class JavaEntityResolver extends EntityResolver<JavaResolvers, CompoundTa
         // Entities
         register(new JavaPaintingEntityHandler());
         register(new JavaItemFrameEntityHandler());
+
+        // Mobs, armor stands and minecarts (translated between editions)
+        for (ChunkerVanillaEntityType type : ChunkerVanillaEntityType.values()) {
+            if (MobEntity.isHandledType(type)) {
+                register(new JavaMobEntityHandler(type));
+            }
+        }
         register(new EmptyEntityHandler<>(ChunkerVanillaEntityType.GLOW_ITEM_FRAME, GlowItemFrameEntity.class, GlowItemFrameEntity::new));
 
         if (version.isGreaterThanOrEqual(26, 3, 0)) {

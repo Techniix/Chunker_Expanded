@@ -1199,3 +1199,75 @@ input:checked + .switch:before {
 .api input {
     width: 50%;
 }
+/* World merging */
+.merge_content {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: auto;
+}
+
+.merge_worlds {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.merge_world {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+}
+
+.merge_world_info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.merge_world_info .version, .merge_world_info .merge_main {
+    font-size: 0.85em;
+    opacity: 0.8;
+}
+
+.merge_world_info .merge_main {
+    color: #6abe30;
+}
+
+.merge_world_actions {
+    display: flex;
+    gap: 6px;
+}
+
+.merge_world_actions .button {
+    min-width: 36px;
+    padding: 4px 8px;
+}
+
+.merge_options {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 12px 20px;
+}
+
+.merge_option {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.merge_option small {
+    opacity: 0.7;
+}
+
+.merge_checkbox {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    column-gap: 8px;
+}
+
+.merge_checkbox small {
+    grid-column: 1 / span 2;
+}

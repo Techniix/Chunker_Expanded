@@ -58,6 +58,15 @@ public class ColumnWriter extends com.hivemc.chunker.conversion.encoding.java.v1
         } else {
             columnNBT.put("yPos", 0);
         }
+
+        // Optionally mark the column as existing terrain so newly generated neighbours blend into it (world merging)
+        if (column.isBlendingHint() && dimension.equals(Dimension.OVERWORLD) && !column.getChunks().isEmpty()) {
+            boolean extendedHeight = column.getChunks().firstByteKey() < 0;
+            CompoundTag blendingData = new CompoundTag(2);
+            blendingData.put("min_section", extendedHeight ? -4 : 0);
+            blendingData.put("max_section", extendedHeight ? 20 : 16);
+            columnNBT.put("blending_data", blendingData);
+        }
     }
 
     @Override

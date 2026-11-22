@@ -1,5 +1,6 @@
 package com.hivemc.chunker.conversion.encoding.base.resolver.entity;
 
+import com.hivemc.chunker.conversion.intermediate.column.entity.MobEntity;
 import com.hivemc.chunker.conversion.encoding.base.Version;
 import com.hivemc.chunker.conversion.intermediate.column.ChunkerColumn;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.ChunkerChunk;
@@ -288,6 +289,21 @@ public abstract class EntityResolver<R, D> extends KeyedHierarchyBasedResolver<R
                 }
             }
         }
+    }
+
+    @Override
+    protected Optional<TypeHandler<R, ChunkerEntityType, D, ? extends Entity>> getFromTypeHandler(Entity input) {
+        // Mob entities share one class for many types, so they're looked up by their type
+        if (input instanceof MobEntity) {
+            TypeHandler<R, ChunkerEntityType, D, ? extends Entity> handler = keyLookup.get(input.getEntityType());
+            if (handler == null || constructDataType(input.getEntityType()) == null) {
+                // Some formats store a variant (e.g. boat wood) as a field, use the base type's handler
+                ChunkerEntityType fallback = MobEntity.fallbackType(input.getEntityType());
+                if (fallback != null && keyLookup.containsKey(fallback)) handler = keyLookup.get(fallback);
+            }
+            return Optional.ofNullable(handler);
+        }
+        return super.getFromTypeHandler(input);
     }
 
     @Override

@@ -27,7 +27,7 @@ import java.util.function.Predicate;
  * A Minecraft 16x16 columns containing chunks.
  */
 public class ChunkerColumn {
-    private final ChunkCoordPair position;
+    private ChunkCoordPair position;
     private final List<Entity> entities = new ArrayList<>(0);
     private final List<BlockEntity> blockEntities = new ArrayList<>(0);
     private final Byte2ObjectSortedMap<ChunkerChunk> chunks = new Byte2ObjectAVLTreeMap<>();
@@ -38,6 +38,7 @@ public class ChunkerColumn {
     private HeightMap heightMap;
     private boolean lightPopulated;
     private Consumer<Map<Edge, ChunkerColumn>> preTransformHandler;
+    private boolean blendingHint;
 
     /**
      * Create a new column.
@@ -55,6 +56,35 @@ public class ChunkerColumn {
      */
     public ChunkCoordPair getPosition() {
         return position;
+    }
+
+    /**
+     * Move this column to a new position. Only the column key is changed, absolute co-ordinates held by entities and
+     * block entities must be moved by the caller (see the merge package for a helper that does this).
+     *
+     * @param position the new position of the column.
+     */
+    public void setPosition(ChunkCoordPair position) {
+        this.position = position;
+    }
+
+    /**
+     * Whether writers that support it should mark this column as "old terrain" so that the game blends newly
+     * generated neighbouring chunks into it (Java 1.18+ blending_data).
+     *
+     * @return true if blending data should be written.
+     */
+    public boolean isBlendingHint() {
+        return blendingHint;
+    }
+
+    /**
+     * Set whether writers that support it should write blending data for this column.
+     *
+     * @param blendingHint true if blending data should be written.
+     */
+    public void setBlendingHint(boolean blendingHint) {
+        this.blendingHint = blendingHint;
     }
 
     /**

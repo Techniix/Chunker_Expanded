@@ -1,5 +1,8 @@
 package com.hivemc.chunker.conversion.encoding.java.base.resolver.entity.legacy;
 
+import com.hivemc.chunker.conversion.intermediate.column.entity.type.ChunkerVanillaEntityType;
+import com.hivemc.chunker.conversion.intermediate.column.entity.MobEntity;
+import com.hivemc.chunker.conversion.encoding.java.base.resolver.entity.handlers.JavaMobEntityHandler;
 import com.hivemc.chunker.conversion.encoding.base.Version;
 import com.hivemc.chunker.conversion.encoding.base.resolver.entity.EntityResolver;
 import com.hivemc.chunker.conversion.encoding.java.base.resolver.JavaResolvers;
@@ -35,6 +38,13 @@ public class JavaLegacyEntityResolver extends EntityResolver<JavaResolvers, Comp
         // Entities
         register(new JavaLegacyPaintingEntityHandler());
         register(new JavaLegacyItemFrameEntityHandler());
+
+        // Mobs, armor stands and minecarts (translated between editions)
+        for (ChunkerVanillaEntityType type : ChunkerVanillaEntityType.values()) {
+            if (MobEntity.isHandledType(type)) {
+                register(new JavaMobEntityHandler(type));
+            }
+        }
     }
 
     @Override

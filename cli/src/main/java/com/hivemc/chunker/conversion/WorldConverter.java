@@ -96,6 +96,13 @@ public class WorldConverter implements Converter {
     private boolean customIdentifiers = true;
     private boolean exceptions = false;
     private boolean cancelled = false;
+    // Optional extra pipeline stages (used by the world merger), these are applied as the outermost handlers
+    @Nullable
+    private java.util.function.Function<LevelConversionHandler, LevelConversionHandler> extraLevelHandler;
+    @Nullable
+    private java.util.function.BiFunction<WorldConversionHandler, ChunkerLevel, WorldConversionHandler> extraWorldHandler;
+    @Nullable
+    private java.util.function.BiFunction<ColumnConversionHandler, ChunkerWorld, ColumnConversionHandler> extraColumnHandler;
 
     /**
      * Create a new WorldConverter with a sessionID.
@@ -104,6 +111,24 @@ public class WorldConverter implements Converter {
      */
     public WorldConverter(UUID sessionID) {
         this.sessionID = sessionID;
+    }
+
+    /**
+     * Set additional pipeline stages which are applied as the outermost handlers of the conversion (they see the data
+     * straight from the reader, before any other processing). Used by the world merger to move / extend columns.
+     *
+     * @param levelHandler  the level stage, or null for none.
+     * @param worldHandler  the world stage, or null for none.
+     * @param columnHandler the column stage, or null for none.
+     */
+    public void setExtraHandlers(
+            @Nullable java.util.function.Function<LevelConversionHandler, LevelConversionHandler> levelHandler,
+            @Nullable java.util.function.BiFunction<WorldConversionHandler, ChunkerLevel, WorldConversionHandler> worldHandler,
+            @Nullable java.util.function.BiFunction<ColumnConversionHandler, ChunkerWorld, ColumnConversionHandler> columnHandler
+    ) {
+        this.extraLevelHandler = levelHandler;
+        this.extraWorldHandler = worldHandler;
+        this.extraColumnHandler = columnHandler;
     }
 
     /**
@@ -567,10 +592,18 @@ public class WorldConverter implements Converter {
 
             // Add handler for the level, this handles saving the level to the world converter instance
             level = null;
-            pipeline.levelHandlers((delegate) -> new LevelHandler(this, delegate));
+            if (extraLevelHandler != null) {
+                pipeline.levelHandlers((delegate) -> new LevelHandler(this, delegate), extraLevelHandler);
+            } else {
+                pipeline.levelHandlers((delegate) -> new LevelHandler(this, delegate));
+            }
 
             // Add handler for the world, handles the remapping of dimensions
-            pipeline.worldHandlers((delegate, level) -> new WorldHandler(this, delegate));
+            if (extraWorldHandler != null) {
+                pipeline.worldHandlers((delegate, level) -> new WorldHandler(this, delegate), extraWorldHandler);
+            } else {
+                pipeline.worldHandlers((delegate, level) -> new WorldHandler(this, delegate));
+            }
 
             // Pre-transforming is allowing columns to be processed together
             // If it's enabled, we need to hold the chunks using the handler
@@ -585,7 +618,8 @@ public class WorldConverter implements Converter {
                                 delegate,
                                 true
                         ),
-                        ColumnPreTransformConversionHandler::new
+                        ColumnPreTransformConversionHandler::new,
+                        extraColumnHandler != null ? extraColumnHandler : (delegate, world) -> delegate
                 );
             } else {
                 // Add the writer handler, this ensures that the writer is still called just without connected chunks
@@ -594,7 +628,8 @@ public class WorldConverter implements Converter {
                                 writer::getPreTransformManager,
                                 delegate,
                                 false
-                        )
+                        ),
+                        extraColumnHandler != null ? extraColumnHandler : (delegate, world) -> delegate
                 );
             }
 

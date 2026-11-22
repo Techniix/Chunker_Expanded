@@ -5,6 +5,7 @@ import com.hivemc.chunker.conversion.handlers.pretransform.Edge;
 import com.hivemc.chunker.conversion.handlers.pretransform.manager.handler.block.BlockPreTransformHandler;
 import com.hivemc.chunker.conversion.handlers.pretransform.manager.handler.entity.EntityPreTransformHandler;
 import com.hivemc.chunker.conversion.intermediate.column.ChunkerColumn;
+import com.hivemc.chunker.conversion.intermediate.column.chunk.ChunkCoordPair;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.ChunkerChunk;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.ChunkerBlockIdentifier;
 import com.hivemc.chunker.conversion.intermediate.column.chunk.identifier.type.block.ChunkerBlockType;
@@ -174,7 +175,9 @@ public abstract class PreTransformManager {
 
         if (!pending.isEmpty()) {
             // Set up the handler which should be called when the edges are ready
-            column.addPreTransformHandler(edges, (neighbours) -> solveEdges(column, neighbours, pending));
+            // Remember where the column was, the column may be moved before the edges are solved (world merging)
+            ChunkCoordPair solvedAt = column.getPosition();
+            column.addPreTransformHandler(edges, (neighbours) -> solveEdges(column, neighbours, pending, solvedAt));
         }
     }
 
@@ -243,31 +246,45 @@ public abstract class PreTransformManager {
      * @param pendingPreTransforms the list of transformations to run for the column.
      */
     protected void solveEdges(ChunkerColumn column, Map<Edge, ChunkerColumn> neighbours, List<PendingPreTransform> pendingPreTransforms) {
+        solveEdges(column, neighbours, pendingPreTransforms, column.getPosition());
+    }
+
+    /**
+     * Solve the pending transforms for a column which may have moved since the transforms were queued.
+     *
+     * @param column               the column being pre-transformed.
+     * @param neighbours           the neighbours which have been loaded (some edges may be missing if they are not found).
+     * @param pendingPreTransforms the list of transformations to run for the column.
+     * @param solvedAt             the position of the column when the transforms were queued.
+     */
+    protected void solveEdges(ChunkerColumn column, Map<Edge, ChunkerColumn> neighbours, List<PendingPreTransform> pendingPreTransforms, ChunkCoordPair solvedAt) {
+        int offsetX = (column.getPosition().chunkX() - solvedAt.chunkX()) << 4;
+        int offsetZ = (column.getPosition().chunkZ() - solvedAt.chunkZ()) << 4;
         for (PendingPreTransform pendingPreTransform : pendingPreTransforms) {
             if (pendingPreTransform instanceof PendingPreTransform.PendingBlockPreTransform pendingBlockPreTransform) {
                 // Fetch the block in the chunk
                 ChunkerBlockIdentifier blockIdentifier = column.getBlock(
-                        pendingBlockPreTransform.x(),
+                        (pendingBlockPreTransform.x() + offsetX),
                         pendingBlockPreTransform.y(),
-                        pendingBlockPreTransform.z()
+                        (pendingBlockPreTransform.z() + offsetZ)
                 );
 
                 // Run the pre-transform handler
                 ChunkerBlockIdentifier newBlockIdentifier = pendingBlockPreTransform.preTransformHandler().handle(
                         column,
                         neighbours,
-                        pendingBlockPreTransform.x(),
+                        (pendingBlockPreTransform.x() + offsetX),
                         pendingBlockPreTransform.y(),
-                        pendingBlockPreTransform.z(),
+                        (pendingBlockPreTransform.z() + offsetZ),
                         blockIdentifier
                 );
 
                 // Update block if it changed
                 if (!newBlockIdentifier.equals(blockIdentifier)) {
                     column.setBlock(
-                            pendingBlockPreTransform.x(),
+                            (pendingBlockPreTransform.x() + offsetX),
                             pendingBlockPreTransform.y(),
-                            pendingBlockPreTransform.z(),
+                            (pendingBlockPreTransform.z() + offsetZ),
                             newBlockIdentifier
                     );
                 }

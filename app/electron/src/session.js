@@ -26,6 +26,8 @@ export class Session {
     _blockMappings = null;
     _biomeMappings = null;
     _customDimensions = null;
+    _mergeWorlds = [];
+    _mergeCounter = 0;
 
     // Handlers
     _asyncResponseMappers = {};
@@ -282,6 +284,18 @@ export class Session {
             case "get_biomes":
                 this.getBiomes(data.outputType, data.requestId);
                 break;
+            case "add_merge_world":
+                await this.addMergeWorld(data.path, data.requestId);
+                break;
+            case "remove_merge_world":
+                await this.removeMergeWorld(data.id, data.requestId);
+                break;
+            case "move_merge_world":
+                this.moveMergeWorld(data.id, data.offset, data.requestId);
+                break;
+            case "merge":
+                await this.mergeWorlds(data.outputType, data.requestId, data);
+                break;
             default:
                 log.log("Unhandled flow message ", data.method, ", full message: ", data);
                 break;
@@ -408,8 +422,21 @@ export class Session {
     }
 
     async selectWorld(inputPath, requestId) {
-        // Create the input directory
         let worldInputPath = path.join(this._sessionPath, "input");
+        if (!await this.importWorld(inputPath, worldInputPath, requestId)) return;
+        await this.detectWorld(worldInputPath, requestId);
+    }
+
+    /**
+     * Copy or extract a world into the session.
+     *
+     * @param inputPath the world folder / archive chosen by the user.
+     * @param worldInputPath the directory to place it in.
+     * @param requestId the request to report progress / errors to.
+     * @returns {Promise<boolean>} true if it was imported.
+     */
+    async importWorld(inputPath, worldInputPath, requestId) {
+        // Create the input directory
         await fs.mkdir(worldInputPath);
 
         // Copy / Extract the world (if it's an archive)
@@ -428,7 +455,7 @@ export class Session {
                 error: "Failed to open selected file, please ensure you don't have it open anywhere else.",
                 stackTrace: e.stack.toString() + "\n"
             });
-            return;
+            return false;
         }
         if (pathStat.isFile() && archiveType === "zip") {
             // Extract zip (also .mcworld / .mctemplate)
@@ -454,7 +481,7 @@ export class Session {
                         type: "error",
                         error: "Provided file does not contain a Minecraft world."
                     });
-                    return;
+                    return false;
                 }
 
                 log.error("Failed to read input zip", e);
@@ -467,7 +494,7 @@ export class Session {
                         error: "This zip file is too large to open, please unzip the file and try opening it as a folder.",
                         stackTrace: e.stack.toString() + "\n"
                     });
-                    return;
+                    return false;
                 }
 
                 // Reply with error
@@ -477,7 +504,7 @@ export class Session {
                     error: "Failed to open selected file, please ensure you don't have it open anywhere else.",
                     stackTrace: e.stack.toString() + "\n"
                 });
-                return;
+                return false;
             }
         } else if (pathStat.isFile() && archiveType === "tar") {
             // Extract tar (optionally gzip / brotli compressed)
@@ -503,7 +530,7 @@ export class Session {
                         type: "error",
                         error: "Provided file does not contain a Minecraft world."
                     });
-                    return;
+                    return false;
                 }
 
                 log.error("Failed to read input tar", e);
@@ -515,7 +542,7 @@ export class Session {
                     error: "Failed to open selected file, please ensure you don't have it open anywhere else.",
                     stackTrace: e.stack.toString() + "\n"
                 });
-                return;
+                return false;
             }
         } else if (pathStat.isFile()) {
             // Unsupported archive type
@@ -527,7 +554,7 @@ export class Session {
                 type: "error",
                 error: "Provided file is not a supported archive."
             });
-            return;
+            return false;
         } else if (pathStat.isDirectory()) {
             // Copy files to the output path
             let totalFiles = await countFiles(inputPath);
@@ -561,7 +588,7 @@ export class Session {
                     error: "Failed to open selected folder, please ensure you don't have it open anywhere else.",
                     stackTrace: e.stack.toString() + "\n"
                 });
-                return;
+                return false;
             }
         } else {
             // Failed
@@ -573,9 +600,20 @@ export class Session {
                 type: "error",
                 error: "Failed to find input world."
             });
-            return;
+            return false;
         }
 
+        return true;
+    }
+
+    /**
+     * Detect the version of an imported world and reply with it.
+     *
+     * @param worldInputPath the imported world directory.
+     * @param requestId the request to reply to.
+     * @param extraOutput extra fields to add to the response output.
+     */
+    async detectWorld(worldInputPath, requestId, extraOutput = {}) {
         // Tell the user that we're detecting the world
         this.sendMessage({
             requestId: requestId,
@@ -628,7 +666,8 @@ export class Session {
                 output: {
                     version: response.output,
                     preloaded_settings: preloaded_settings,
-                    session: this._sessionID
+                    session: this._sessionID,
+                    ...extraOutput
                 }
             }
         });
@@ -764,50 +803,128 @@ export class Session {
         }
 
         // Send the convert version request
-        this.sendToProcess(request, async (response) => {
-            if (response.type !== "response") return response; // Forward errors
-
-            // Tell the user that we're zipping the output
-            this.sendMessage({
-                requestId: requestId,
-                type: "progress_state",
-                percentage: 0.999,
-                animated: true,
-                name: "Zipping output",
-                continue: true
-            });
-
-            // Create a zip of the output using archiver as the file size may be larger than available ram
-            try {
-                // Use the user provided file name
-                let outputFileName = (this._finalName ?? "output").replaceAll(/[^A-Za-z0-9_\-@]/g, "_");
-
-                // Ensure that there are not too many underscores from replacement
-                outputFileName = outputFileName.replace(/_{2,}/g, '_');
-
-                // If the filename is empty or over 128 characters use "output"
-                if (outputFileName.length === 0 || outputFileName.length >= 128) {
-                    outputFileName = "output";
-                }
-                outputFileName = outputFileName + (outputType.startsWith("BEDROCK") ? ".mcworld" : ".zip");
-
-                // Create the zip
-                let outputZipPath = path.join(this._sessionPath, outputFileName);
-                await zipRecursive(worldOutputPath, outputZipPath);
-
-                // Add the file name
-                response.output.download = "session://" + this._sessionID + "/" + outputFileName;
-
-                // Return the response
-                return response;
-            } catch (e) {
-                return {
-                    requestId: response.requestId,
-                    type: "error",
-                    error: "Failed to create output ZIP.",
-                    stackTrace: e.stack.toString() + "\n"
-                };
-            }
-        });
+        this.sendToProcess(request, (response) => this.zipOutput(response, requestId, outputType, worldOutputPath));
     }
+
+    /**
+     * Zip a converted world so it can be saved, then forward the response.
+     */
+    async zipOutput(response, requestId, outputType, worldOutputPath) {
+        if (response.type !== "response") return response; // Forward errors
+
+        // Tell the user that we're zipping the output
+        this.sendMessage({
+            requestId: requestId,
+            type: "progress_state",
+            percentage: 0.999,
+            animated: true,
+            name: "Zipping output",
+            continue: true
+        });
+
+        // Create a zip of the output using archiver as the file size may be larger than available ram
+        try {
+            // Use the user provided file name
+            let outputFileName = (this._finalName ?? "output").replaceAll(/[^A-Za-z0-9_\-@]/g, "_");
+
+            // Ensure that there are not too many underscores from replacement
+            outputFileName = outputFileName.replace(/_{2,}/g, '_');
+
+            // If the filename is empty or over 128 characters use "output"
+            if (outputFileName.length === 0 || outputFileName.length >= 128) {
+                outputFileName = "output";
+            }
+            outputFileName = outputFileName + (outputType.startsWith("BEDROCK") ? ".mcworld" : ".zip");
+
+            // Create the zip
+            let outputZipPath = path.join(this._sessionPath, outputFileName);
+            await zipRecursive(worldOutputPath, outputZipPath);
+
+            // Add the file name
+            response.output.download = "session://" + this._sessionID + "/" + outputFileName;
+
+            // Return the response
+            return response;
+        } catch (e) {
+            return {
+                requestId: response.requestId,
+                type: "error",
+                error: "Failed to create output ZIP.",
+                stackTrace: e.stack.toString() + "\n"
+            };
+        }
+    }
+
+    /**
+     * Add a world to the list of worlds to merge.
+     */
+    async addMergeWorld(inputPath, requestId) {
+        let id = this._mergeCounter++;
+        let worldInputPath = path.join(this._sessionPath, "merge_input_" + id);
+        if (!await this.importWorld(inputPath, worldInputPath, requestId)) {
+            await fs.rm(worldInputPath, {recursive: true, force: true});
+            return;
+        }
+        let name = path.basename(inputPath.replace(/[\\/]+$/, "")).replace(/\.(zip|mcworld|mctemplate|tar|tar\.gz|tgz|tar\.br|tbr)$/i, "");
+        this._mergeWorlds.push({id: id, path: worldInputPath, name: name});
+        await this.detectWorld(worldInputPath, requestId, {mergeId: id, name: name});
+    }
+
+    /**
+     * Remove a world from the merge list.
+     */
+    async removeMergeWorld(id, requestId) {
+        let world = this._mergeWorlds.find(entry => entry.id === id);
+        this._mergeWorlds = this._mergeWorlds.filter(entry => entry.id !== id);
+        if (world) {
+            await fs.rm(world.path, {recursive: true, force: true});
+        }
+        this.sendMessage({requestId: requestId, type: "response", output: this._mergeWorlds.map(entry => entry.id)});
+    }
+
+    /**
+     * Move a world up / down the merge order (the first world is the main world).
+     */
+    moveMergeWorld(id, offset, requestId) {
+        let index = this._mergeWorlds.findIndex(entry => entry.id === id);
+        let target = index + offset;
+        if (index >= 0 && target >= 0 && target < this._mergeWorlds.length) {
+            let [world] = this._mergeWorlds.splice(index, 1);
+            this._mergeWorlds.splice(target, 0, world);
+        }
+        this.sendMessage({requestId: requestId, type: "response", output: this._mergeWorlds.map(entry => entry.id)});
+    }
+
+    /**
+     * Merge every world in the merge list into one output world.
+     */
+    async mergeWorlds(outputType, requestId, data) {
+        let worldOutputPath = path.join(this._sessionPath, "output");
+        await fs.rm(worldOutputPath, {recursive: true, force: true});
+        await fs.mkdir(worldOutputPath);
+
+        let request = {
+            type: "merge",
+            requestId: requestId,
+            anonymousId: this._sessionID,
+            inputPaths: this._mergeWorlds.map(entry => entry.path),
+            outputPath: worldOutputPath,
+            outputType: outputType,
+            copyNbt: !data.hasOwnProperty("keepNbt") || data["keepNbt"],
+            gapChunks: data["gapChunks"],
+            seamWidthChunks: data["seamWidthChunks"],
+            seams: data["seams"],
+            belowZero: data["belowZero"],
+            layout: data["layout"],
+            alignRegions: data["alignRegions"],
+            javaBlending: data.hasOwnProperty("javaBlending") && data["javaBlending"],
+            skipMaps: data.hasOwnProperty("mapConversion") && !data["mapConversion"],
+            skipLootTables: data.hasOwnProperty("lootTableConversion") && !data["lootTableConversion"],
+            enableCompact: !data.hasOwnProperty("enableCompact") || data["enableCompact"],
+            nbtSettings: this._worldSettings
+        };
+        this._finalName = data["outputName"] ?? this._finalName ?? "merged";
+        this.sendToProcess(request, (response) => this.zipOutput(response, requestId, outputType, worldOutputPath));
+    }
+
 }

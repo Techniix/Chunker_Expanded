@@ -143,6 +143,12 @@ public class CLI implements Runnable {
             return;
         }
 
+        // World merging has its own set of options
+        if (args.length >= 1 && args[0].equals("merge")) {
+            System.exit(new CommandLine(new MergeCLI()).setCaseInsensitiveEnumValuesAllowed(true).execute(java.util.Arrays.copyOfRange(args, 1, args.length)));
+            return;
+        }
+
         // Parse args
         int exitCode = new CommandLine(new CLI()).execute(args);
         System.exit(exitCode);

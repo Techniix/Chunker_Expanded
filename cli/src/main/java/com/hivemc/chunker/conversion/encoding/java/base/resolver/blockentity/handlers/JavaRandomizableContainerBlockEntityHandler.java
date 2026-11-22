@@ -93,7 +93,7 @@ public class JavaRandomizableContainerBlockEntityHandler extends BlockEntityHand
      * @param writing   whether it is being read or written (true if written).
      * @return the output loot table.
      */
-    public String applyVersionSpecificLootTableFixes(@NotNull JavaResolvers resolvers, String lootTable, boolean writing) {
+    public static String applyVersionSpecificLootTableFixes(@NotNull JavaResolvers resolvers, String lootTable, boolean writing) {
         if (!writing) return lootTable; // Currently fixes are only applied on writing to preserve data
         if (resolvers.dataVersion().getVersion().isLessThan(1, 14, 0)) {
             return PRE_1_14_LOOT_TABLES.getOrDefault(lootTable, lootTable);
