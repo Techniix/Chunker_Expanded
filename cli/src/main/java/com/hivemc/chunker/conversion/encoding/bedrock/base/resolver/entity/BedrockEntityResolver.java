@@ -1,5 +1,7 @@
 package com.hivemc.chunker.conversion.encoding.bedrock.base.resolver.entity;
 
+import com.hivemc.chunker.conversion.intermediate.column.entity.MobEntity;
+import com.hivemc.chunker.conversion.encoding.bedrock.base.resolver.entity.handlers.BedrockMobEntityHandler;
 import com.hivemc.chunker.conversion.encoding.base.Version;
 import com.hivemc.chunker.conversion.encoding.base.resolver.entity.EmptyEntityHandler;
 import com.hivemc.chunker.conversion.encoding.base.resolver.entity.EntityResolver;
@@ -39,6 +41,13 @@ public class BedrockEntityResolver extends EntityResolver<BedrockResolvers, Comp
         // Supported Entities (currently only paintings and item frames)
         register(new BedrockPaintingEntityHandler());
         register(new BedrockItemFrameEntityHandler());
+
+        // Mobs, armor stands and minecarts (translated between editions)
+        for (ChunkerVanillaEntityType type : ChunkerVanillaEntityType.values()) {
+            if (MobEntity.isHandledType(type)) {
+                register(new BedrockMobEntityHandler(type));
+            }
+        }
         register(new EmptyEntityHandler<>(ChunkerVanillaEntityType.GLOW_ITEM_FRAME, GlowItemFrameEntity.class, () -> {
             throw new IllegalArgumentException("Glow item frames cannot be read from Bedrock.");
         }));

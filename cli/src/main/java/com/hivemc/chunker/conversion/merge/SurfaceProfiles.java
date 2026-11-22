@@ -38,8 +38,18 @@ public class SurfaceProfiles {
      * @param filler the block table index of the block under the top.
      * @param biome  the biome table index at the surface.
      * @param water  whether the surface is underwater.
+     * @param edges  exact ground heights along the four edges: [west x=0, east x=15, north z=0, south z=15][16].
+     * @param treeCover  the fraction of samples under a tree canopy.
+     * @param plantCover the fraction of samples with a plant (grass, flowers...) on the ground.
      */
-    public record Profile(short[] ground, short[] top, short[] filler, short[] biome, boolean[] water) {
+    public record Profile(short[] ground, short[] top, short[] filler, short[] biome, boolean[] water, short[][] edges,
+                          float treeCover, float plantCover) {
+    }
+
+    private static boolean isTreePart(ChunkerBlockIdentifier identifier) {
+        String name = identifier.getType().toString();
+        return name.endsWith("_LOG") || name.endsWith("_LEAVES") || name.endsWith("_WOOD") || name.endsWith("_STEM")
+                || name.equals("MUSHROOM_STEM") || name.endsWith("_MUSHROOM_BLOCK");
     }
 
     /**
@@ -126,6 +136,7 @@ public class SurfaceProfiles {
         short[] ground = new short[16], top = new short[16], filler = new short[16], biome = new short[16];
         boolean[] water = new boolean[16];
         boolean anyGround = false;
+        int trees = 0, plants = 0, samples = 0;
 
         for (int cellZ = 0; cellZ < 4; cellZ++) {
             for (int cellX = 0; cellX < 4; cellX++) {
@@ -147,6 +158,19 @@ public class SurfaceProfiles {
                 filler[i] = indexOf(TerrainBlocks.isSurfaceMaterial(fillerBlock) ? fillerBlock : TerrainBlocks.STONE);
                 water[i] = TerrainBlocks.isWaterLike(column.getBlock(x, y + 1, z));
 
+                // Vegetation cover, so seams can continue it
+                if (!water[i]) {
+                    samples++;
+                    ChunkerBlockIdentifier above = column.getBlock(x, y + 1, z);
+                    if (!above.isAir() && !isTreePart(above)) plants++;
+                    for (int dy = 1; dy <= 14; dy++) {
+                        if (isTreePart(column.getBlock(x, y + dy, z))) {
+                            trees++;
+                            break;
+                        }
+                    }
+                }
+
                 // Biome at the surface (or the fallback if not present)
                 ChunkerBiome surfaceBiome = fallbackBiome;
                 if (column.getBiomes() != null) {
@@ -159,8 +183,22 @@ public class SurfaceProfiles {
         }
 
         if (anyGround) {
-            profiles.put(key(column.getPosition().chunkX(), column.getPosition().chunkZ()), new Profile(ground, top, filler, biome, water));
+            // Exact heights along the edges, used to join seams precisely
+            short[][] edges = new short[4][16];
+            for (int i = 0; i < 16; i++) {
+                edges[0][i] = groundHeight(column, 0, i);
+                edges[1][i] = groundHeight(column, 15, i);
+                edges[2][i] = groundHeight(column, i, 0);
+                edges[3][i] = groundHeight(column, i, 15);
+            }
+            profiles.put(key(column.getPosition().chunkX(), column.getPosition().chunkZ()), new Profile(ground, top, filler, biome, water, edges,
+                    samples == 0 ? 0 : trees / (float) samples, samples == 0 ? 0 : plants / (float) samples));
         }
+    }
+
+    private static short groundHeight(ChunkerColumn column, int x, int z) {
+        Pair<Integer, ChunkerBlockIdentifier> highest = column.getHighestBlock(x, z, TerrainBlocks::isGround);
+        return highest == null ? NO_GROUND : highest.first().shortValue();
     }
 
     /**

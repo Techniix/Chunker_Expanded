@@ -71,6 +71,8 @@ public abstract class BasicMessage {
         KILL(KillRequest.class),
         @SerializedName("biomes")
         BIOMES(BiomesRequest.class),
+        @SerializedName("merge")
+        MERGE(MergeRequest.class),
 
         // Output
         @SerializedName("response")

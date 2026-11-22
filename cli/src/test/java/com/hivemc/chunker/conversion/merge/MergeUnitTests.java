@@ -206,4 +206,91 @@ public class MergeUnitTests {
         assertTrue(nearA.contains(ChunkerBiome.ChunkerVanillaBiome.PLAINS));
         assertTrue(nearB.contains(ChunkerBiome.ChunkerVanillaBiome.DESERT));
     }
+
+    @Test
+    public void testEntityIdRemapping() {
+        CompoundTag bedrock = new CompoundTag();
+        bedrock.put("UniqueID", -4294967200L);
+        bedrock.put("OwnerNew", -4294967295L);
+        CompoundTag again = new CompoundTag();
+        again.put("UniqueID", -4294967200L);
+
+        EntityIdRemapper.remapEntity(bedrock, 0);
+        assertEquals(-4294967200L, bedrock.getLong("UniqueID"), "The main world is never remapped");
+
+        EntityIdRemapper.remapEntity(bedrock, 1);
+        EntityIdRemapper.remapEntity(again, 2);
+        assertNotEquals(-4294967200L, bedrock.getLong("UniqueID"));
+        assertNotEquals(bedrock.getLong("UniqueID"), again.getLong("UniqueID"), "Different worlds get different IDs");
+        assertEquals(-4294967295L, bedrock.getLong("OwnerNew"), "Pet owners (players) are kept");
+
+        // Same world and ID remap to the same value (so references still match)
+        CompoundTag first = new CompoundTag();
+        first.put("UUID", new int[]{1, 2, 3, 4});
+        CompoundTag leash = new CompoundTag();
+        leash.put("UUID", new int[]{1, 2, 3, 4});
+        CompoundTag leashed = new CompoundTag();
+        leashed.put("leash", leash);
+        EntityIdRemapper.remapEntity(first, 3);
+        EntityIdRemapper.remapEntity(leashed, 3);
+        assertArrayEquals(first.getIntArray("UUID"), leash.getIntArray("UUID"));
+        assertFalse(java.util.Arrays.equals(new int[]{1, 2, 3, 4}, first.getIntArray("UUID")));
+    }
+
+    @Test
+    public void testSeamFillsCorridorBetweenWorlds() {
+        SurfaceProfiles profiles = new SurfaceProfiles();
+        // Two worlds 40 chunks apart, more than twice the seam width
+        for (int z = 0; z < 4; z++) {
+            for (int x = 0; x < 4; x++) {
+                profiles.markOccupied(x, z);
+                profiles.record(flatColumn(x, z, 30), 0, ChunkerBiome.ChunkerVanillaBiome.PLAINS);
+                profiles.markOccupied(x + 44, z);
+                profiles.record(flatColumn(x + 44, z, 30), 0, ChunkerBiome.ChunkerVanillaBiome.PLAINS);
+            }
+        }
+        SeamGenerator generator = new SeamGenerator(profiles, new MergeSettings().setSeamWidthChunks(4), true, ChunkerBiome.ChunkerVanillaBiome.PLAINS);
+        generator.prepare();
+        for (int x = 4; x < 44; x++) {
+            assertTrue(generator.getTargetChunks().contains(SurfaceProfiles.key(x, 1)), "Corridor chunk " + x + " should be filled");
+        }
+        // Without corridors the middle stays empty
+        SeamGenerator noCorridors = new SeamGenerator(profiles, new MergeSettings().setSeamWidthChunks(4).setMaxCorridorChunks(0), true, ChunkerBiome.ChunkerVanillaBiome.PLAINS);
+        noCorridors.prepare();
+        assertFalse(noCorridors.getTargetChunks().contains(SurfaceProfiles.key(24, 1)));
+    }
+
+    @Test
+    public void testSeamJoinsExactlyAndHasVegetation() {
+        SurfaceProfiles profiles = new SurfaceProfiles();
+        for (int z = 0; z < 4; z++) {
+            for (int x = 0; x < 4; x++) {
+                profiles.markOccupied(x, z);
+                profiles.record(flatColumn(x, z, 70), 0, ChunkerBiome.ChunkerVanillaBiome.FOREST);
+            }
+        }
+        SeamGenerator generator = new SeamGenerator(profiles, new MergeSettings().setSeamWidthChunks(8), true, ChunkerBiome.ChunkerVanillaBiome.PLAINS);
+        generator.prepare();
+
+        // Next to the world the surface is exactly the world's height
+        ChunkerColumn next = generator.generate(4, 1);
+        for (int z = 0; z < 16; z++) {
+            int ground = next.getHighestBlock(0, z, TerrainBlocks::isGround).first();
+            assertEquals(70, ground, 1, "Seam must join the world's edge at z=" + z);
+        }
+
+        // Further out there are plants / trees on grass
+        int plants = 0;
+        for (int chunkX = 6; chunkX < 11; chunkX++) {
+            ChunkerColumn column = generator.generate(chunkX, 1);
+            for (int x = 0; x < 16; x++) {
+                for (int z = 0; z < 16; z++) {
+                    var top = column.getHighestBlock(x, z, block -> !block.isAir());
+                    if (top != null && !TerrainBlocks.isGround(top.second())) plants++;
+                }
+            }
+        }
+        assertTrue(plants > 50, "Expected vegetation in forest seams, found " + plants);
+    }
+
 }

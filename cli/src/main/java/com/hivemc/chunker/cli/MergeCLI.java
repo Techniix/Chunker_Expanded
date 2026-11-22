@@ -64,6 +64,9 @@ public class MergeCLI implements Callable<Integer> {
     @CommandLine.Option(names = "--seam-width", defaultValue = "16", description = "How far seams reach from each world, in chunks. Default: ${DEFAULT-VALUE}.")
     private int seamWidth;
 
+    @CommandLine.Option(names = "--max-corridor", defaultValue = "96", description = "Fill straight runs of empty chunks up to this long between worlds (and holes inside them) with blended terrain, 0 to disable. Default: ${DEFAULT-VALUE}.")
+    private int maxCorridor;
+
     @CommandLine.Option(names = "--no-below-zero", description = "Don't generate terrain below Y=0 for pre-1.18 worlds.")
     private boolean noBelowZero;
 
@@ -115,6 +118,7 @@ public class MergeCLI implements Callable<Integer> {
                 .setLayout(layout)
                 .setSeamMode(seams)
                 .setSeamWidthChunks(seamWidth)
+                .setMaxCorridorChunks(maxCorridor)
                 .setGenerateBelowZero(!noBelowZero)
                 .setJavaBlendingHints(javaBlending)
                 .setAlignRegions(alignRegions)

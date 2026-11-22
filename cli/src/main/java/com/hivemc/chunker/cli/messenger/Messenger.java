@@ -1,5 +1,9 @@
 package com.hivemc.chunker.cli.messenger;
 
+import com.hivemc.chunker.cli.messenger.messaging.request.MergeRequest;
+import com.hivemc.chunker.conversion.merge.WorldMerger;
+import com.hivemc.chunker.conversion.merge.MergeSource;
+import com.hivemc.chunker.conversion.merge.MergeSettings;
 import com.google.common.util.concurrent.ExecutionError;
 import com.google.gson.*;
 import com.hivemc.chunker.cli.messenger.messaging.BasicMessage;
@@ -355,6 +359,7 @@ public class Messenger {
                         response.add("output", getBiomesForOutput(biomesRequest.getOutputType()));
                         write(new OutputResponse(biomesRequest.getRequestId(), response));
                     }
+                    case MERGE -> startMergeRequest((MergeRequest) message);
                     case KILL -> {
                         KillRequest killRequest = (KillRequest) message;
 
@@ -644,6 +649,112 @@ public class Messenger {
 
         // Started
         return true;
+    }
+
+    /**
+     * Start merging worlds for a merge request, progress and the result are written as messages.
+     *
+     * @param request the request.
+     */
+    public static void startMergeRequest(MergeRequest request) {
+        UUID taskID = request.getRequestId();
+        WorldConverter worldConverter = createWorldConverter(request.getAnonymousId(), taskID);
+        worldConverter.setChangedSettings(request.getNbtSettings());
+        worldConverter.setProcessMaps(!request.isSkipMaps());
+        worldConverter.setProcessLootTables(!request.isSkipLootTables());
+        if (request.getEnableCompact() != null) worldConverter.setLevelDBCompaction(request.getEnableCompact());
+        worldConverter.setCompactionSignal((started) -> write(new ProgressStateResponse(taskID, started ? "Compacting world" : null, started)));
+
+        // Settings
+        MergeSettings settings = new MergeSettings();
+        if (request.getGapChunks() != null) settings.setGapChunks(request.getGapChunks());
+        if (request.getSeamWidthChunks() != null) settings.setSeamWidthChunks(request.getSeamWidthChunks());
+        if (request.getSeams() != null) settings.setSeamMode(request.getSeams() ? MergeSettings.SeamMode.SYNTHESIZE : MergeSettings.SeamMode.NONE);
+        if (request.getBelowZero() != null) settings.setGenerateBelowZero(request.getBelowZero());
+        if (request.getLayout() != null) settings.setLayout(MergeSettings.Layout.valueOf(request.getLayout().toUpperCase(Locale.ROOT)));
+        if (request.getAlignRegions() != null) settings.setAlignRegions(request.getAlignRegions());
+        settings.setJavaBlendingHints(request.isJavaBlending());
+
+        List<MergeSource> sources = new ArrayList<>();
+        for (String input : request.getInputPaths()) {
+            sources.add(new MergeSource(new File(input), null));
+        }
+
+        Thread thread = new Thread(() -> {
+            try {
+                WorldMerger merger = new WorldMerger(sources, settings, worldConverter, (converter) -> {
+                    if (request.getOutputType().equalsIgnoreCase("INPUT")) {
+                        MergeSource first = sources.get(0);
+                        return first.getEncodingType() == null ? Optional.empty()
+                                : first.getEncodingType().createWriter(new File(request.getOutputPath()), first.getVersion(), converter);
+                    }
+                    return findWriter(request.getOutputType(), converter, new File(request.getOutputPath()));
+                }, request.isCopyNbt(), (log) -> System.err.println("[merge] " + log));
+
+                // Overall progress across every pass
+                int passes = sources.size() + (settings.getSeamMode() == MergeSettings.SeamMode.SYNTHESIZE ? 1 : 0);
+                int[] pass = {0};
+                merger.setPassMonitor((name, task) -> {
+                    int current = pass[0]++;
+                    write(new ProgressStateResponse(taskID, name, false));
+                    while (!task.future().isDone()) {
+                        write(new ProgressResponse(taskID, Math.min(0.999, (current + task.getProgress()) / passes)));
+                        try {
+                            Thread.sleep(500);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        }
+                    }
+                });
+
+                WorldMerger.MergeReport report = merger.run();
+                JsonObject output = new JsonObject();
+                if (worldConverter.isExceptions()) {
+                    output.addProperty("anonymousId", request.getAnonymousId().toString());
+                }
+                JsonArray missingIdentifiers = new JsonArray(worldConverter.getMissingIdentifiers().size());
+                for (Map.Entry<Converter.MissingMappingType, String> entry : worldConverter.getMissingIdentifiers().entries()) {
+                    JsonObject missingIdentifier = new JsonObject();
+                    missingIdentifier.addProperty("identifier", entry.getKey().getName() + ": " + entry.getValue());
+                    missingIdentifier.addProperty("type", entry.getKey().toString());
+                    missingIdentifier.addProperty("value", entry.getValue());
+                    missingIdentifiers.add(missingIdentifier);
+                }
+                output.add("missingIdentifiers", missingIdentifiers);
+                output.addProperty("summary", report.toString());
+                JsonArray placements = new JsonArray();
+                for (MergeSource source : sources) {
+                    JsonObject placement = new JsonObject();
+                    placement.addProperty("name", source.getName());
+                    placement.addProperty("x", source.getOffset().blockX());
+                    placement.addProperty("z", source.getOffset().blockZ());
+                    placements.add(placement);
+                }
+                output.add("placements", placements);
+                write(new OutputResponse(taskID, output));
+            } catch (Throwable throwable) {
+                if (worldConverter.isCancelled()) {
+                    write(new ErrorResponse(taskID, true, "The process was cancelled", null, null, null));
+                } else {
+                    Throwable cause = throwable.getCause() != null ? throwable.getCause() : throwable;
+                    if (cause instanceof OutOfMemoryError) System.exit(12);
+                    write(new ErrorResponse(
+                            taskID,
+                            false,
+                            throwable.getMessage() != null ? throwable.getMessage() : getFriendlyErrorMessage(cause),
+                            request.getAnonymousId().toString(),
+                            cause.getMessage(),
+                            printStackTrace(throwable)
+                    ));
+                }
+            } finally {
+                removeWorldConverter(request.getAnonymousId(), taskID);
+                System.gc();
+            }
+        }, "Chunker Merge");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     /**

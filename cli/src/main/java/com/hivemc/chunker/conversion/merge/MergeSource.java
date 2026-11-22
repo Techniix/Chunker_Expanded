@@ -28,6 +28,7 @@ public class MergeSource {
 
     // Decided by the layout
     private ChunkOffset offset = ChunkOffset.ZERO;
+    private int index;
 
     /**
      * Create a source.
@@ -104,6 +105,17 @@ public class MergeSource {
 
     public void setCavesAndCliffs(boolean cavesAndCliffs) {
         this.cavesAndCliffs = cavesAndCliffs;
+    }
+
+    /**
+     * The position of this world in the merge order (0 is the main world).
+     */
+    public int getIndex() {
+        return index;
+    }
+
+    public void setIndex(int index) {
+        this.index = index;
     }
 
     public ChunkOffset getOffset() {

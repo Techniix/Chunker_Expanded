@@ -3,18 +3,33 @@
 Chunker Expanded can merge any number of Java and Bedrock worlds, from any version Chunker can read, into one large
 world. While merging it:
 
-- **Keeps your data.** Columns, chests and their contents, signs, banners, item frames, paintings, maps and Bedrock
-  portal records are carried over and moved to their new positions. Positions mobs remember are moved too (bee hives,
-  villager beds and job sites, leash knots, turtle home beaches and so on).
+- **Keeps your data.** Columns, chests and their contents (including un-opened loot chests), signs, banners, item
+  frames, paintings, maps and Bedrock portal records are moved to their new positions.
+- **Translates mobs between editions.** Mobs, armor stands, minecarts (including chest / hopper minecart contents and
+  loot), boats and chest boats, dropped items and end crystals are converted between Java and Bedrock. This covers
+  type, position, name, health, baby / age, tamed / sitting, saddles, chests and their items, wool and collar colours,
+  sheared sheep, charged creepers, horse armor and llama carpets, villager professions, appearance variants (horse coat and markings, cat breed,
+  llama / parrot / axolotl / rabbit / fox / frog / mooshroom colours), equipment and armor. Worlds of the same edition
+  can also keep their exact original data with `-k`.
 - **Generates the area below Y=0 for pre-1.18 worlds.** Like the game's own upgrade, the old bedrock floor at Y 0–4
   is replaced and deepslate with caves, ores, tuff, lava and a new bedrock floor is added from Y −64 to −1. This works
   for both Java and Bedrock output, because Chunker writes the target format directly and the game's own upgrade step
   never runs.
-- **Blends the borders.** The gaps around and between worlds are filled with generated *seam* terrain. Its height is
-  solved as a smooth surface that starts exactly at each world's real edge, so there are no chunk walls. Materials,
-  water and biomes come from the nearest world edge, and the borders between them are warped so they look natural.
+- **Blends the borders.** The gaps around and between worlds are filled with generated *seam* terrain:
+  - heights are solved as a smooth surface that starts exactly at each world's real edge, so there are no chunk walls;
+  - surface materials, water and biomes come from the nearest world edge, with warped, natural-looking borders, and
+    fade into each biome's normal surface further out;
+  - grass, flowers, trees, cacti and snow are added to suit the biome, continuing the density found at the world's
+    edge;
+  - straight corridors of empty chunks between worlds (and holes inside them) are bridged from both sides.
 
-## Usage
+## Using the app
+
+On the **Select World** screen choose **Merge multiple worlds**, add two or more world folders or archives, order them
+(the first is the main world), pick the output format and options, then press **Merge**. The result is saved like a
+normal conversion.
+
+## Using the command line
 
 ```
 java -jar chunker-cli.jar merge -f JAVA_1_21_11 -o MergedWorld WorldA WorldB BedrockWorldC OldWorld_1_12
@@ -32,20 +47,28 @@ worlds are packed around it in a grid.
 | `--offset NAME=X,Z` | – | Place worlds manually (block offsets, multiples of 512). If any are given, unlisted worlds stay where they are. |
 | `--seams` | `SYNTHESIZE` | `SYNTHESIZE` generates blended terrain around worlds; `NONE` leaves gaps for the game to generate. |
 | `--seam-width` | `16` | How far, in chunks, seam terrain reaches out from each world's edge. |
+| `--max-corridor` | `96` | Fill straight runs of empty chunks up to this long between worlds (and holes inside them). `0` disables it. |
 | `--no-below-zero` | off | Don't generate below Y=0 for old worlds. |
 | `--align-regions` | `1` | Placement alignment in regions. `8` keeps Nether portals linked exactly (the Nether is moved by 1/8th). |
 | `--no-nether-scale` | off | Move the Nether by the full overworld offset instead of 1/8th. |
 | `--sea-level` | `63` | Sea level used for seam water. |
 | `--seed` | fixed | Seed for generated caves, ores and seam detail. |
-| `-k, --keepOriginalNBT` | off | For worlds of the **same edition** as the output, copy original NBT so mobs and any other data Chunker doesn't model come across exactly. |
+| `-k, --keepOriginalNBT` | off | For worlds of the **same edition** as the output, copy original NBT so every detail of mobs and blocks is kept exactly. |
 | `--java-blending` | off | *Experimental:* write Java `blending_data` so terrain the game generates later (beyond the seams) blends into the merged chunks. Test it on a copy first. |
 
-## Mobs and other entities
+## What isn't carried over
 
-Stock Chunker only translates a few entity types between editions (item frames and paintings). Other
-mobs need their original NBT copied, which is only possible when the source and output are the same edition. Use
-`-k` to keep them for those worlds. Mobs in worlds of the other edition are dropped, and Chunker prints a
-`Missing entity mapping` line for each type. Translating mobs between editions is on the to-do list below.
+- **Villager trades, AI memories and attributes** of mobs translated between editions are regenerated by the game.
+  Same-edition worlds keep them with `-k`.
+- **Pet owners across editions.** Tamed wolves / cats / parrots going to Bedrock are given to the host player. Going
+  to Java there is no way to know the player's account UUID, so they keep their position and looks but become
+  untamed (horses, donkeys, llamas and camels stay tamed).
+- **Mob health going to Bedrock** is reset to full (Bedrock stores it as an attribute with limits Chunker doesn't
+  model). Armor stand poses are not translated.
+- **Nether portal links** are only exact with `--align-regions 8`. Otherwise the game creates a new portal on first
+  use.
+- The End of every world after the first is moved along with its overworld, so their main islands end up out in the
+  void.
 
 ## How it works
 
@@ -55,19 +78,27 @@ mobs need their original NBT copied, which is only possible when the source and 
 3. **Passes.** Each world is converted in turn through the normal Chunker pipeline into one shared writer
    (`MergeLevelWriter`). That writer writes `level.dat` once, renumbers maps so their IDs don't collide, keeps files and
    databases open between passes, and only flushes at the end. `MergeTransform` runs first in the pipeline. It moves
-   columns, entities, block entities, maps and portals, generates the below-zero layer and records a compact surface
-   profile near each world's edge.
-4. **Seams.** `SeamGenerator` finds every empty chunk within `--seam-width` of a world and solves a harmonic (Laplace)
-   height field on a 4×4 block grid. Real edge heights are fixed, and the open outer edge carries the nearest world's
-   height outwards. Detail noise is added, scaled by how rough the neighbouring terrain is and faded out at the edges.
-   A flood fill gives each cell the surface materials, water and biome of the nearest edge, sampled through a
-   domain-warped lookup. The seams are written by a final pass through the same pipeline (`SeamLevelReader`).
+   columns, entities, block entities, maps and portals, gives entities copied from later worlds fresh IDs
+   (`EntityIdRemapper`), generates the below-zero layer and records a compact surface profile near each world's edge.
+4. **Seams.** `SeamGenerator` finds every empty chunk within `--seam-width` of a world, plus corridors between worlds,
+   and solves a harmonic (Laplace) height field on a 4×4 block grid. Real edge heights are fixed and the open outer
+   edge carries the nearest world's height outwards; the first few blocks ease into each world's exact edge heights.
+   A flood fill gives each cell the surface materials, water, biome and vegetation density of the nearest edge,
+   sampled through a domain-warped lookup. The seams are written by a final pass through the same pipeline
+   (`SeamLevelReader`).
 
-Code lives in `cli/src/main/java/com/hivemc/chunker/conversion/merge`.
+Mob translation lives in `MobEntity`, `JavaMobEntityHandler` and `BedrockMobEntityHandler`. Bedrock mobs need their
+behaviour component groups listed in `definitions`. The groups for adults, babies, tamed / chested animals, villager
+professions and appearance variants come from `cli/src/main/resources/bedrock/entity_definitions.json`, which
+`tools/gen_bedrock_entity_definitions.py` derives from Mojang's
+[bedrock-samples](https://github.com/Mojang/bedrock-samples) behaviour pack by simulating each entity's spawn event.
 
-## Ideas / to-do
+Merge code lives in `cli/src/main/java/com/hivemc/chunker/conversion/merge`; the app screen is
+`app/ui/src/components/screen/merge/mergeScreen.js`.
 
-- Translate common mobs between Java and Bedrock (type and basic fields such as health, name, age, tamed, variants).
-- Vegetation (grass, flowers, trees) on seam terrain.
-- Carry block/fluid tick lists and Java POI (villager beds, bells) through merges.
-- A GUI tab in the Electron app.
+## Things to check in-game
+
+These were built from format documentation and Mojang's behaviour pack, but couldn't be tested inside the games here:
+
+- `--java-blending` (vanilla's own `blending_data` handling).
+- Translated Bedrock mobs keep their behaviour (component groups) after loading.

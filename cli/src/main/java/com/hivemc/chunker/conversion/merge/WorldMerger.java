@@ -97,6 +97,9 @@ public class WorldMerger {
         MergeReport report = new MergeReport();
 
         // 1. Scan
+        for (int i = 0; i < sources.size(); i++) {
+            sources.get(i).setIndex(i);
+        }
         for (MergeSource source : sources) {
             scan(source);
             log.accept("Found " + source + ": " + describeBounds(source));

@@ -161,6 +161,9 @@ public class MergeTransform {
             @Override
             public void convertColumn(ChunkerColumn column) {
                 move(column, offset);
+                for (Entity entity : column.getEntities()) {
+                    EntityIdRemapper.remapEntity(entity.getOriginalNBT(), source.getIndex());
+                }
                 columns.incrementAndGet();
                 entities.addAndGet(column.getEntities().size());
                 blockEntities.addAndGet(column.getBlockEntities().size());

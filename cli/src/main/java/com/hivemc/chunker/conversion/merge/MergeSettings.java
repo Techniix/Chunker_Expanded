@@ -29,6 +29,7 @@ public class MergeSettings {
     private Layout layout = Layout.GRID;
     private SeamMode seamMode = SeamMode.SYNTHESIZE;
     private int seamWidthChunks = 16;
+    private int maxCorridorChunks = 96;
     private boolean generateBelowZero = true;
     private boolean javaBlendingHints = false;
     private boolean scaleNether = true;
@@ -83,6 +84,20 @@ public class MergeSettings {
     public MergeSettings setSeamWidthChunks(int seamWidthChunks) {
         if (seamWidthChunks < 1) throw new IllegalArgumentException("Seam width must be at least 1 chunk");
         this.seamWidthChunks = seamWidthChunks;
+        return this;
+    }
+
+    /**
+     * The longest run of empty chunks (in a straight line between two written chunks) which is filled with seam
+     * terrain, this bridges neighbouring worlds and holes inside worlds. 0 disables it.
+     */
+    public int getMaxCorridorChunks() {
+        return maxCorridorChunks;
+    }
+
+    public MergeSettings setMaxCorridorChunks(int maxCorridorChunks) {
+        if (maxCorridorChunks < 0) throw new IllegalArgumentException("Corridor length must not be negative");
+        this.maxCorridorChunks = maxCorridorChunks;
         return this;
     }
 
