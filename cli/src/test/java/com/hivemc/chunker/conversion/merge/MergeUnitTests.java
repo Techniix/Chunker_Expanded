@@ -293,4 +293,107 @@ public class MergeUnitTests {
         assertTrue(plants > 50, "Expected vegetation in forest seams, found " + plants);
     }
 
+
+    @Test
+    public void testInteriorEdgesOfLargeWorldsAreProfiled() {
+        // A large world: its explored area can end (or have holes) far from the edge of its bounding box
+        MergeSource source = new MergeSource(new File("large"), null);
+        source.getBoundsByDimension().put(Dimension.OVERWORLD.getIdentifier(), new RegionBounds(-10, -10, 10, 10));
+        SurfaceProfiles profiles = new SurfaceProfiles();
+        MergeTransform transform = new MergeTransform(source, new MergeSettings(), false, true, null, profiles);
+        var handler = transform.columnHandler(new com.hivemc.chunker.conversion.handlers.ColumnConversionHandler() {
+            @Override
+            public void convertColumn(ChunkerColumn column) {
+            }
+
+            @Override
+            public void flushRegion(RegionCoordPair regionCoordPair) {
+            }
+
+            @Override
+            public void flushColumns() {
+            }
+        }, new com.hivemc.chunker.conversion.intermediate.world.ChunkerWorld(Dimension.OVERWORLD, Set.of(new RegionCoordPair(0, 0))));
+        handler.convertColumn(flatColumn(5, 5, 90));
+        assertNotNull(profiles.get(5, 5), "Chunks deep inside the bounds must be profiled so seams next to them join up");
+    }
+
+    @Test
+    public void testSeamFillsHoleInsideWorldAtItsHeight() {
+        SurfaceProfiles profiles = new SurfaceProfiles();
+        // A 40x40 chunk world at height 90 with a 6x6 unexplored hole in the middle
+        for (int x = 0; x < 40; x++) {
+            for (int z = 0; z < 40; z++) {
+                if (x >= 17 && x < 23 && z >= 17 && z < 23) continue;
+                profiles.markOccupied(x, z);
+                profiles.record(flatColumn(x, z, 90), 0, ChunkerBiome.ChunkerVanillaBiome.PLAINS);
+            }
+        }
+        SeamGenerator generator = new SeamGenerator(profiles, new MergeSettings().setSeamWidthChunks(8), true, ChunkerBiome.ChunkerVanillaBiome.PLAINS);
+        generator.prepare();
+        for (int x = 17; x < 23; x++) {
+            assertTrue(generator.getTargetChunks().contains(SurfaceProfiles.key(x, 20)), "Hole chunk " + x + " should be filled");
+        }
+        assertNull(profiles.get(10, 10), "Profiles far from any seam are freed");
+        ChunkerColumn hole = generator.generate(17, 20);
+        for (int z = 0; z < 16; z++) {
+            assertEquals(90, hole.getHighestBlock(0, z, TerrainBlocks::isGround).first(), 1, "Hole must join the world at z=" + z);
+        }
+        ChunkerColumn middle = generator.generate(20, 20);
+        int ground = middle.getHighestBlock(8, 8, TerrainBlocks::isGround).first();
+        assertEquals(90, ground, 6, "A hole is filled at the surrounding height, not sea level");
+    }
+
+    @Test
+    public void testSeamCarriesLakesWithoutWaterWalls() {
+        SurfaceProfiles profiles = new SurfaceProfiles();
+        // A world whose ground is at 60 with a lake up to Y=70 over it (above sea level)
+        for (int x = 0; x < 4; x++) {
+            for (int z = 0; z < 4; z++) {
+                ChunkerColumn column = flatColumn(x, z, 60);
+                for (int bx = 0; bx < 16; bx++) {
+                    for (int bz = 0; bz < 16; bz++) {
+                        for (int y = 61; y <= 70; y++) column.setBlock(bx, y, bz, TerrainBlocks.WATER);
+                    }
+                }
+                profiles.markOccupied(x, z);
+                profiles.record(column, 0, ChunkerBiome.ChunkerVanillaBiome.PLAINS);
+            }
+        }
+        SeamGenerator generator = new SeamGenerator(profiles, new MergeSettings().setSeamWidthChunks(6), true, ChunkerBiome.ChunkerVanillaBiome.PLAINS);
+        generator.prepare();
+
+        // The lake carries on at its own level next to the world
+        ChunkerColumn next = generator.generate(4, 1);
+        assertEquals(ChunkerVanillaBlockType.WATER, next.getBlock(0, 70, 8).getType());
+        assertTrue(next.getBlock(0, 71, 8).isAir());
+
+        // Nowhere does water stand next to dry ground lower than its surface
+        java.util.Map<Long, ChunkerColumn> columns = new java.util.HashMap<>();
+        for (int chunkX = 4; chunkX < 9; chunkX++) {
+            for (int chunkZ = 0; chunkZ < 4; chunkZ++) columns.put(SurfaceProfiles.key(chunkX, chunkZ), generator.generate(chunkX, chunkZ));
+        }
+        int walls = 0;
+        for (int x = 64; x < 143; x++) {
+            for (int z = 0; z < 63; z++) {
+                int[] a = surface(columns, x, z), b = surface(columns, x + 1, z), c = surface(columns, x, z + 1);
+                for (int[] n : new int[][]{b, c}) {
+                    if (a[1] > 0 && n[1] == 0 && n[0] < a[1]) walls++;
+                    if (n[1] > 0 && a[1] == 0 && a[0] < n[1]) walls++;
+                }
+            }
+        }
+        assertEquals(0, walls, "Water must not stand as a wall next to lower dry ground");
+    }
+
+    /**
+     * Ground height and the water surface above it (0 if dry) of a block column.
+     */
+    private static int[] surface(java.util.Map<Long, ChunkerColumn> columns, int x, int z) {
+        ChunkerColumn column = columns.get(SurfaceProfiles.key(x >> 4, z >> 4));
+        int ground = column.getHighestBlock(x & 15, z & 15, TerrainBlocks::isGround).first();
+        int water = 0;
+        for (int y = ground + 1; TerrainBlocks.isWaterLike(column.getBlock(x & 15, y, z & 15)); y++) water = y;
+        return new int[]{ground, water};
+    }
 }

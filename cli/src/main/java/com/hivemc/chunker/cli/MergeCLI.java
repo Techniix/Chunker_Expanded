@@ -133,6 +133,8 @@ public class MergeCLI implements Callable<Integer> {
         merger.setPassMonitor(MergeCLI::printProgress);
 
         WorldMerger.MergeReport report = merger.run();
+        report.writeGuide(outputDirectory);
+        for (String line : report.getLines()) System.out.println(line);
         System.out.println(report);
         Duration duration = stopwatch.elapsed();
         System.out.printf(Locale.ROOT, "Merge complete! Took %dh %dm %ds%n", duration.toHoursPart(), duration.toMinutesPart(), duration.toSecondsPart());

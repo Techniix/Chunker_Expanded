@@ -154,8 +154,6 @@ public class MergeTransform {
         Dimension dimension = world.getDimension();
         ChunkOffset offset = offsetFor(dimension);
         boolean overworld = dimension.getIdentifier().equals(Dimension.OVERWORLD.getIdentifier());
-        RegionBounds placedBounds = source.getBounds(dimension) == null ? null : source.getBounds(dimension).offset(offset);
-        int profileDepth = 32 + settings.getSeamWidthChunks();
 
         return new ColumnConversionHandler() {
             @Override
@@ -178,10 +176,11 @@ public class MergeTransform {
                     if (profiles != null) {
                         int x = column.getPosition().chunkX(), z = column.getPosition().chunkZ();
                         profiles.markOccupied(x, z);
-                        if (placedBounds != null && placedBounds.chunksInside(x, z) < profileDepth) {
-                            int biomeOffset = source.isCavesAndCliffs() ? 4 : 0;
-                            profiles.record(column, biomeOffset, dimension.getFallbackBiome());
-                        }
+                        // Every column is profiled: a played world's explored area is irregular, so its edges (and
+                        // unexplored holes) can be anywhere, not just near the edge of its bounding box. Profiles that
+                        // turn out not to be near a seam are dropped before the seams are generated.
+                        int biomeOffset = source.isCavesAndCliffs() ? 4 : 0;
+                        profiles.record(column, biomeOffset, dimension.getFallbackBiome());
                     }
 
                     column.setBlendingHint(settings.isJavaBlendingHints());

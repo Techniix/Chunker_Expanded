@@ -97,6 +97,24 @@ export class SaveScreen extends BaseScreen {
                             </p>
                         </div>
                     )}
+                    {this.app.state.convertResult.placements && this.app.state.convertResult.placements.length > 0 &&
+                        <div className="merge_placements">
+                            <h3>Where your worlds are now</h3>
+                            <p>Each world was moved as a whole. Add its offset to an old coordinate to find a build. This
+                                list is also saved as merged_worlds.txt inside the world.</p>
+                            <ul>
+                                {this.app.state.convertResult.placements.map((placement, index) => (
+                                    <li key={index}>
+                                        <strong>{placement.name}</strong>
+                                        {placement.x === 0 && placement.z === 0
+                                            ? " kept its original coordinates"
+                                            : ` moved by X ${placement.x >= 0 ? "+" : ""}${placement.x}, Z ${placement.z >= 0 ? "+" : ""}${placement.z}`}
+                                        {placement.spawnX !== undefined && <span> &mdash; its spawn is now at <code>/tp @s {placement.spawnX} ~ {placement.spawnZ}</code></span>}
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    }
                     {this.app.state.convertResult.missingIdentifiers.length > 0 &&
                         <div>
                             <button className="button blue" onClick={this.openModal}>Show Output Log</button>

@@ -29,6 +29,13 @@ On the **Select World** screen choose **Merge multiple worlds**, add two or more
 (the first is the main world), pick the output format and options, then press **Merge**. The result is saved like a
 normal conversion.
 
+## Finding your worlds afterwards
+
+The first world keeps its coordinates. The others are moved as a whole (so builds keep their shape) by a whole number
+of regions. The save screen lists how far each world moved and where its spawn is now, with a `/tp` command to get
+there, and the same list is saved as `merged_worlds.txt` inside the merged world. To find a build, add its world's
+offset to the coordinates it had before.
+
 ## Using the command line
 
 ```

@@ -25,6 +25,10 @@ public class MergeSource {
     @Nullable
     private Version version;
     private boolean cavesAndCliffs = true;
+    @Nullable
+    private String levelName;
+    private int spawnX;
+    private int spawnZ;
 
     // Decided by the layout
     private ChunkOffset offset = ChunkOffset.ZERO;
@@ -116,6 +120,48 @@ public class MergeSource {
 
     public void setIndex(int index) {
         this.index = index;
+    }
+
+    /**
+     * The world's own name (from its level data), or the folder name if it has none.
+     */
+    public String getDisplayName() {
+        return levelName == null || levelName.isBlank() ? name : levelName;
+    }
+
+    public void setLevelName(@Nullable String levelName) {
+        this.levelName = levelName;
+    }
+
+    public int getSpawnX() {
+        return spawnX;
+    }
+
+    public int getSpawnZ() {
+        return spawnZ;
+    }
+
+    public void setSpawn(int spawnX, int spawnZ) {
+        this.spawnX = spawnX;
+        this.spawnZ = spawnZ;
+    }
+
+    /**
+     * Describe where the world ended up, for the merge report.
+     */
+    public String describePlacement() {
+        int dx = offset.blockX(), dz = offset.blockZ();
+        String spawn = "its spawn is at X " + (spawnX + dx) + ", Z " + (spawnZ + dz)
+                + " (in game: /tp @s " + (spawnX + dx) + " ~ " + (spawnZ + dz) + ")";
+        if (dx == 0 && dz == 0) {
+            return getDisplayName() + " (" + name + "): kept its original coordinates, " + spawn + ".";
+        }
+        return getDisplayName() + " (" + name + "): moved by X " + signed(dx) + ", Z " + signed(dz) + ", " + spawn
+                + ". Something that was at X, Z in this world is now at X " + signed(dx) + ", Z " + signed(dz) + ".";
+    }
+
+    private static String signed(int value) {
+        return value >= 0 ? "+" + value : String.valueOf(value);
     }
 
     public ChunkOffset getOffset() {

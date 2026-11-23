@@ -37,13 +37,20 @@ public class SurfaceProfiles {
      * @param top    the block table index of the top ground block.
      * @param filler the block table index of the block under the top.
      * @param biome  the biome table index at the surface.
-     * @param water  whether the surface is underwater.
+     * @param waterTop the Y of the highest water block above each sample's ground, or {@link #NO_GROUND} if it's dry.
      * @param edges  exact ground heights along the four edges: [west x=0, east x=15, north z=0, south z=15][16].
+     * @param edgeWater the Y of the highest water block above each edge column, or {@link #NO_GROUND} (same layout).
      * @param treeCover  the fraction of samples under a tree canopy.
      * @param plantCover the fraction of samples with a plant (grass, flowers...) on the ground.
      */
-    public record Profile(short[] ground, short[] top, short[] filler, short[] biome, boolean[] water, short[][] edges,
-                          float treeCover, float plantCover) {
+    public record Profile(short[] ground, short[] top, short[] filler, short[] biome, short[] waterTop, short[][] edges,
+                          short[][] edgeWater, float treeCover, float plantCover) {
+        /**
+         * Whether a sample is under water.
+         */
+        public boolean water(int sample) {
+            return waterTop[sample] != NO_GROUND;
+        }
     }
 
     private static boolean isTreePart(ChunkerBlockIdentifier identifier) {
@@ -134,7 +141,7 @@ public class SurfaceProfiles {
      */
     public void record(ChunkerColumn column, int biomeIndexOffset, ChunkerBiome fallbackBiome) {
         short[] ground = new short[16], top = new short[16], filler = new short[16], biome = new short[16];
-        boolean[] water = new boolean[16];
+        short[] waterTop = new short[16];
         boolean anyGround = false;
         int trees = 0, plants = 0, samples = 0;
 
@@ -145,6 +152,7 @@ public class SurfaceProfiles {
                 Pair<Integer, ChunkerBlockIdentifier> highest = column.getHighestBlock(x, z, TerrainBlocks::isGround);
                 if (highest == null) {
                     ground[i] = NO_GROUND;
+                    waterTop[i] = NO_GROUND;
                     continue;
                 }
                 anyGround = true;
@@ -156,10 +164,10 @@ public class SurfaceProfiles {
                 // Filler is the first natural block a few blocks under the surface
                 ChunkerBlockIdentifier fillerBlock = column.getBlock(x, y - 2, z);
                 filler[i] = indexOf(TerrainBlocks.isSurfaceMaterial(fillerBlock) ? fillerBlock : TerrainBlocks.STONE);
-                water[i] = TerrainBlocks.isWaterLike(column.getBlock(x, y + 1, z));
+                waterTop[i] = waterTopAbove(column, x, y, z);
 
                 // Vegetation cover, so seams can continue it
-                if (!water[i]) {
+                if (waterTop[i] == NO_GROUND) {
                     samples++;
                     ChunkerBlockIdentifier above = column.getBlock(x, y + 1, z);
                     if (!above.isAir() && !isTreePart(above)) plants++;
@@ -185,15 +193,28 @@ public class SurfaceProfiles {
         if (anyGround) {
             // Exact heights along the edges, used to join seams precisely
             short[][] edges = new short[4][16];
+            short[][] edgeWater = new short[4][16];
             for (int i = 0; i < 16; i++) {
-                edges[0][i] = groundHeight(column, 0, i);
-                edges[1][i] = groundHeight(column, 15, i);
-                edges[2][i] = groundHeight(column, i, 0);
-                edges[3][i] = groundHeight(column, i, 15);
+                int[][] positions = {{0, i}, {15, i}, {i, 0}, {i, 15}};
+                for (int edge = 0; edge < 4; edge++) {
+                    int x = positions[edge][0], z = positions[edge][1];
+                    edges[edge][i] = groundHeight(column, x, z);
+                    edgeWater[edge][i] = edges[edge][i] == NO_GROUND ? NO_GROUND : waterTopAbove(column, x, edges[edge][i], z);
+                }
             }
-            profiles.put(key(column.getPosition().chunkX(), column.getPosition().chunkZ()), new Profile(ground, top, filler, biome, water, edges,
+            profiles.put(key(column.getPosition().chunkX(), column.getPosition().chunkZ()), new Profile(ground, top, filler, biome, waterTop, edges, edgeWater,
                     samples == 0 ? 0 : trees / (float) samples, samples == 0 ? 0 : plants / (float) samples));
         }
+    }
+
+    /**
+     * The Y of the highest water block in the run of water directly above the ground, or {@link #NO_GROUND}.
+     */
+    private static short waterTopAbove(ChunkerColumn column, int x, int groundY, int z) {
+        int y = groundY + 1;
+        if (!TerrainBlocks.isWaterLike(column.getBlock(x, y, z))) return NO_GROUND;
+        while (y < 319 && TerrainBlocks.isWaterLike(column.getBlock(x, y + 1, z))) y++;
+        return (short) y;
     }
 
     private static short groundHeight(ChunkerColumn column, int x, int z) {

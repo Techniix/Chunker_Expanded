@@ -41,7 +41,8 @@ public class SeamGenerator {
     private static final long SALT_WARP_X = 102;
     private static final long SALT_WARP_Z = 103;
     private static final long SALT_BASELINE = 104;
-    private static final double DETAIL_AMPLITUDE = 4.0;
+    private static final double DETAIL_AMPLITUDE = 22.0;
+    private static final double DETAIL_GAIN = 3.0; // The noise has a spread of about a third, this makes it about one
     private static final double WARP_BLOCKS = 7.0;
 
     private final SurfaceProfiles profiles;
@@ -67,7 +68,7 @@ public class SeamGenerator {
     private short[] labelTop;
     private short[] labelFiller;
     private short[] labelBiome;
-    private boolean[] labelWater;
+    private short[] labelWaterTop;
 
     /**
      * Create a seam generator.
@@ -108,6 +109,7 @@ public class SeamGenerator {
         if (targetChunks.isEmpty()) return 0;
         buildCells();
         floodFill();
+        smoothRoughness();
         solveHeights();
         return targetChunks.size();
     }
@@ -117,6 +119,13 @@ public class SeamGenerator {
         LongSet occupied = profiles.getOccupied(); // All passes are finished, so no locking is needed
         for (long key : profiles.getProfiles().keySet()) {
             int chunkX = SurfaceProfiles.keyX(key), chunkZ = SurfaceProfiles.keyZ(key);
+            // Only chunks on the edge of the written area have empty chunks around them
+            if (occupied.contains(SurfaceProfiles.key(chunkX + 1, chunkZ)) && occupied.contains(SurfaceProfiles.key(chunkX - 1, chunkZ))
+                    && occupied.contains(SurfaceProfiles.key(chunkX, chunkZ + 1)) && occupied.contains(SurfaceProfiles.key(chunkX, chunkZ - 1))
+                    && occupied.contains(SurfaceProfiles.key(chunkX + 1, chunkZ + 1)) && occupied.contains(SurfaceProfiles.key(chunkX - 1, chunkZ - 1))
+                    && occupied.contains(SurfaceProfiles.key(chunkX - 1, chunkZ + 1)) && occupied.contains(SurfaceProfiles.key(chunkX + 1, chunkZ - 1))) {
+                continue;
+            }
             for (int dx = -width; dx <= width; dx++) {
                 for (int dz = -width; dz <= width; dz++) {
                     int x = chunkX + dx, z = chunkZ + dz;
@@ -127,6 +136,23 @@ public class SeamGenerator {
             }
         }
         fillCorridors(occupied, settings.getMaxCorridorChunks());
+        dropDistantProfiles();
+    }
+
+    /**
+     * Free the profiles of chunks that are too far from any seam to be used (most of each world's interior).
+     */
+    private void dropDistantProfiles() {
+        int reach = 4; // Covers the edge easing, interpolation and the domain warp of surface materials
+        profiles.getProfiles().keySet().removeIf(key -> {
+            int chunkX = SurfaceProfiles.keyX(key), chunkZ = SurfaceProfiles.keyZ(key);
+            for (int dx = -reach; dx <= reach; dx++) {
+                for (int dz = -reach; dz <= reach; dz++) {
+                    if (targetChunks.contains(SurfaceProfiles.key(chunkX + dx, chunkZ + dz))) return false;
+                }
+            }
+            return true;
+        });
     }
 
     /**
@@ -189,7 +215,7 @@ public class SeamGenerator {
         labelTop = new short[count];
         labelFiller = new short[count];
         labelBiome = new short[count];
-        labelWater = new boolean[count];
+        labelWaterTop = new short[count];
     }
 
     /**
@@ -201,14 +227,32 @@ public class SeamGenerator {
         return profile.ground()[((cz & 3) << 2) | (cx & 3)];
     }
 
-    private static float roughness(SurfaceProfiles.Profile profile) {
-        int min = Integer.MAX_VALUE, max = Integer.MIN_VALUE;
-        for (short ground : profile.ground()) {
-            if (ground == SurfaceProfiles.NO_GROUND) continue;
-            min = Math.min(min, ground);
-            max = Math.max(max, ground);
+    private final it.unimi.dsi.fastutil.longs.Long2FloatOpenHashMap roughnessCache = new it.unimi.dsi.fastutil.longs.Long2FloatOpenHashMap();
+
+    /**
+     * How hilly the written terrain around a chunk is: the spread (standard deviation) of ground heights over the
+     * surrounding 5x5 chunks, so seams carry on hills at the same scale as the world they join.
+     */
+    private float roughness(int chunkX, int chunkZ) {
+        long key = SurfaceProfiles.key(chunkX, chunkZ);
+        if (roughnessCache.containsKey(key)) return roughnessCache.get(key);
+        double sum = 0, sumSquares = 0;
+        int count = 0;
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dz = -2; dz <= 2; dz++) {
+                SurfaceProfiles.Profile profile = profiles.get(chunkX + dx, chunkZ + dz);
+                if (profile == null) continue;
+                for (short ground : profile.ground()) {
+                    if (ground == SurfaceProfiles.NO_GROUND) continue;
+                    sum += ground;
+                    sumSquares += (double) ground * ground;
+                    count++;
+                }
+            }
         }
-        return min == Integer.MAX_VALUE ? 0 : max - min;
+        float result = count < 2 ? 0 : (float) Math.sqrt(Math.max(0, sumSquares / count - (sum / count) * (sum / count)));
+        roughnessCache.put(key, result);
+        return result;
     }
 
     /**
@@ -240,13 +284,13 @@ public class SeamGenerator {
                 if (profile.ground()[sample] == SurfaceProfiles.NO_GROUND) continue;
                 distance[i] = 1;
                 labelHeight[i] = profile.ground()[sample];
-                labelRough[i] = roughness(profile);
+                labelRough[i] = roughness(nx >> 2, nz >> 2);
                 labelTrees[i] = profile.treeCover();
                 labelPlants[i] = profile.plantCover();
                 labelTop[i] = profile.top()[sample];
                 labelFiller[i] = profile.filler()[sample];
                 labelBiome[i] = profile.biome()[sample];
-                labelWater[i] = profile.water()[sample];
+                labelWaterTop[i] = profile.waterTop()[sample];
                 queue.enqueue(i);
                 break;
             }
@@ -266,9 +310,32 @@ public class SeamGenerator {
                 labelTop[j] = labelTop[i];
                 labelFiller[j] = labelFiller[i];
                 labelBiome[j] = labelBiome[i];
-                labelWater[j] = labelWater[i];
+                labelWaterTop[j] = labelWaterTop[i];
                 queue.enqueue(j);
             }
+        }
+    }
+
+    /**
+     * Blur the hilliness taken from the nearest edge, so where seams from a rough world and a smooth world meet the
+     * hills fade out gradually instead of stopping along a line.
+     */
+    private void smoothRoughness() {
+        int count = cellX.length;
+        float[] next = new float[count];
+        for (int iteration = 0; iteration < 48; iteration++) {
+            for (int i = 0; i < count; i++) {
+                float sum = labelRough[i];
+                int n = 1;
+                for (int[] offset : NEIGHBOURS) {
+                    int j = cellIndex.get(cellKey(cellX[i] + offset[0], cellZ[i] + offset[1]));
+                    if (j == UNKNOWN) continue;
+                    sum += labelRough[j];
+                    n++;
+                }
+                next[i] = sum / n;
+            }
+            System.arraycopy(next, 0, labelRough, 0, count);
         }
     }
 
@@ -338,39 +405,54 @@ public class SeamGenerator {
     }
 
     /**
-     * The final (detailed) surface height at a cell, using real terrain for written cells.
+     * The solved height at a cell, using real terrain for written cells.
      *
      * @return the height or NaN if the cell is neither generated nor written.
      */
     private double cellHeight(int cx, int cz) {
         int i = cellIndex.get(cellKey(cx, cz));
-        if (i != UNKNOWN) {
-            int d = distance[i] == Integer.MAX_VALUE ? 64 : distance[i];
-            double fade = Math.min(1.0, (d - 1) / 6.0);
-            double amplitude = Math.min(DETAIL_AMPLITUDE, labelRough[i] * 0.5);
-            return height[i] + amplitude * fade * noise.fbm2(SALT_DETAIL, cx / 6.0, cz / 6.0, 3);
-        }
+        if (i != UNKNOWN) return height[i];
         short ground = fixedGround(cx, cz);
         return ground != SurfaceProfiles.NO_GROUND ? ground : Double.NaN;
     }
 
     /**
-     * The surface height at a block, bilinearly interpolated between cell centres. Cells outside the generated /
-     * written area are ignored so the outer edge of a seam doesn't bend towards an arbitrary value.
+     * How much hill detail a cell gets: as rough as the nearest world's terrain, faded in away from its edge.
+     */
+    private double cellDetail(int cx, int cz) {
+        int i = cellIndex.get(cellKey(cx, cz));
+        if (i == UNKNOWN) return 0;
+        int d = distance[i] == Integer.MAX_VALUE ? 64 : distance[i];
+        double fade = Math.min(1.0, (d - 1) / 5.0);
+        fade = fade * fade * (3 - 2 * fade);
+        return Math.min(DETAIL_AMPLITUDE, labelRough[i] * 1.1) * fade;
+    }
+
+    /**
+     * The surface height at a block: the solved field bilinearly interpolated between cell centres, plus hills.
+     * Cells outside the generated / written area are ignored so the outer edge of a seam doesn't bend towards an
+     * arbitrary value.
      */
     double blockHeight(int x, int z) {
         double fx = (x - 1.5) / 4.0, fz = (z - 1.5) / 4.0;
         int cx = (int) Math.floor(fx), cz = (int) Math.floor(fz);
         double tx = fx - cx, tz = fz - cz;
         double[] heights = {cellHeight(cx, cz), cellHeight(cx + 1, cz), cellHeight(cx, cz + 1), cellHeight(cx + 1, cz + 1)};
+        double[] details = {cellDetail(cx, cz), cellDetail(cx + 1, cz), cellDetail(cx, cz + 1), cellDetail(cx + 1, cz + 1)};
         double[] weights = {(1 - tx) * (1 - tz), tx * (1 - tz), (1 - tx) * tz, tx * tz};
-        double total = 0, weight = 0;
+        double total = 0, detail = 0, weight = 0;
         for (int i = 0; i < 4; i++) {
             if (Double.isNaN(heights[i])) continue;
             total += heights[i] * weights[i];
+            detail += details[i] * weights[i];
             weight += weights[i];
         }
-        if (weight > 1e-9) return total / weight;
+        if (weight > 1e-9) {
+            double amplitude = detail / weight;
+            double hills = amplitude <= 0 ? 0 : amplitude * DETAIL_GAIN * (0.65 * noise.fbm2(SALT_DETAIL, x / 20.0, z / 20.0, 3)
+                    + 0.55 * noise.fbm2(SALT_DETAIL + 1, x / 64.0, z / 64.0, 2));
+            return total / weight + hills;
+        }
         // Nothing known nearby (shouldn't happen for target chunks), use any known corner or the baseline
         for (double height : heights) if (!Double.isNaN(height)) return height;
         return baseline(x >> 2, z >> 2);
@@ -390,7 +472,10 @@ public class SeamGenerator {
     /**
      * Surface attributes looked up at a domain-warped position so borders between worlds look natural.
      */
-    private record Surface(ChunkerBlockIdentifier top, ChunkerBlockIdentifier filler, ChunkerBiome biome, boolean water) {
+    private record Surface(ChunkerBlockIdentifier top, ChunkerBlockIdentifier filler, ChunkerBiome biome, int waterTop) {
+        boolean water() {
+            return waterTop != SurfaceProfiles.NO_GROUND;
+        }
     }
 
     private Surface surfaceAt(int x, int z) {
@@ -411,7 +496,7 @@ public class SeamGenerator {
         if (distanceBlocks > reach) {
             Surface natural = biomeSurface(surface.biome());
             // Only keep lake / sea water where the terrain stays below sea level
-            return new Surface(natural.top(), natural.filler(), surface.biome(), surface.water() && distanceBlocks < reach * 3);
+            return new Surface(natural.top(), natural.filler(), surface.biome(), distanceBlocks < reach * 3 ? surface.waterTop() : SurfaceProfiles.NO_GROUND);
         }
         return surface;
     }
@@ -423,27 +508,91 @@ public class SeamGenerator {
      */
     private static Surface biomeSurface(ChunkerBiome biome) {
         String name = biome.toString().toUpperCase(java.util.Locale.ROOT);
-        if (name.contains("DESERT") || name.contains("BEACH")) return new Surface(TerrainBlocks.SAND, TerrainBlocks.SAND, biome, false);
+        if (name.contains("DESERT") || name.contains("BEACH")) return new Surface(TerrainBlocks.SAND, TerrainBlocks.SAND, biome, SurfaceProfiles.NO_GROUND);
         if (name.contains("BADLANDS") || name.contains("MESA")) {
-            return new Surface(new ChunkerBlockIdentifier(ChunkerVanillaBlockType.RED_SAND), new ChunkerBlockIdentifier(ChunkerVanillaBlockType.TERRACOTTA), biome, false);
+            return new Surface(new ChunkerBlockIdentifier(ChunkerVanillaBlockType.RED_SAND), new ChunkerBlockIdentifier(ChunkerVanillaBlockType.TERRACOTTA), biome, SurfaceProfiles.NO_GROUND);
         }
-        if (name.contains("STONY") || name.contains("PEAK")) return new Surface(TerrainBlocks.STONE, TerrainBlocks.STONE, biome, false);
-        if (name.contains("MUSHROOM")) return new Surface(new ChunkerBlockIdentifier(ChunkerVanillaBlockType.MYCELIUM), TerrainBlocks.DIRT, biome, false);
-        return new Surface(TerrainBlocks.GRASS_BLOCK, TerrainBlocks.DIRT, biome, false);
+        if (name.contains("STONY") || name.contains("PEAK")) return new Surface(TerrainBlocks.STONE, TerrainBlocks.STONE, biome, SurfaceProfiles.NO_GROUND);
+        if (name.contains("MUSHROOM")) return new Surface(new ChunkerBlockIdentifier(ChunkerVanillaBlockType.MYCELIUM), TerrainBlocks.DIRT, biome, SurfaceProfiles.NO_GROUND);
+        return new Surface(TerrainBlocks.GRASS_BLOCK, TerrainBlocks.DIRT, biome, SurfaceProfiles.NO_GROUND);
     }
 
     private Surface surfaceOfCell(int cx, int cz) {
         int i = cellIndex.get(cellKey(cx, cz));
         if (i != UNKNOWN) {
             if (distance[i] == Integer.MAX_VALUE) return null;
-            return new Surface(profiles.block(labelTop[i]), profiles.block(labelFiller[i]), profiles.biome(labelBiome[i]), labelWater[i]);
+            return new Surface(profiles.block(labelTop[i]), profiles.block(labelFiller[i]), profiles.biome(labelBiome[i]), labelWaterTop[i]);
         }
         SurfaceProfiles.Profile profile = profiles.get(cx >> 2, cz >> 2);
         if (profile == null) return null;
         int sample = ((cz & 3) << 2) | (cx & 3);
         if (profile.ground()[sample] == SurfaceProfiles.NO_GROUND) return null;
         return new Surface(profiles.block(profile.top()[sample]), profiles.block(profile.filler()[sample]),
-                profiles.biome(profile.biome()[sample]), profile.water()[sample]);
+                profiles.biome(profile.biome()[sample]), profile.waterTop()[sample]);
+    }
+
+    /**
+     * The height of a generated column: the smooth field, eased into the exact edges of written neighbours.
+     */
+    private int generatedHeight(int wx, int wz, int minY) {
+        int chunkX = wx >> 4, chunkZ = wz >> 4, x = wx & 15, z = wz & 15;
+        double h = blockHeight(wx, wz);
+        h = easeToEdge(h, profiles.get(chunkX - 1, chunkZ), 1, z, x);       // West neighbour's east edge, distance x
+        h = easeToEdge(h, profiles.get(chunkX + 1, chunkZ), 0, z, 15 - x);  // East neighbour's west edge
+        h = easeToEdge(h, profiles.get(chunkX, chunkZ - 1), 3, x, z);       // North neighbour's south edge
+        h = easeToEdge(h, profiles.get(chunkX, chunkZ + 1), 2, x, 15 - z);  // South neighbour's north edge
+        return Math.max(minY + 1, Math.min(300, (int) Math.round(h)));
+    }
+
+    private static final int WATER_EDGE_BLOCKS = 8;
+    private static final int BANK_BLOCKS = 6;
+
+    /**
+     * The water surface for a generated column, or {@link SurfaceProfiles#NO_GROUND}. Water at the edge of a written
+     * neighbour carries on into the seam at the same level (which may be above sea level for lakes and rivers).
+     */
+    private int waterTopAt(int wx, int wz, Surface surface) {
+        int chunkX = wx >> 4, chunkZ = wz >> 4, x = wx & 15, z = wz & 15;
+        int best = SurfaceProfiles.NO_GROUND, bestDistance = WATER_EDGE_BLOCKS;
+        int[][] candidates = {
+                {chunkX - 1, chunkZ, 1, z, x}, {chunkX + 1, chunkZ, 0, z, 15 - x},
+                {chunkX, chunkZ - 1, 3, x, z}, {chunkX, chunkZ + 1, 2, x, 15 - z}
+        };
+        for (int[] candidate : candidates) {
+            if (candidate[4] >= bestDistance) continue;
+            SurfaceProfiles.Profile neighbour = profiles.get(candidate[0], candidate[1]);
+            if (neighbour == null) continue;
+            short level = neighbour.edgeWater()[candidate[2]][candidate[3]];
+            if (level == SurfaceProfiles.NO_GROUND) continue;
+            best = level;
+            bestDistance = candidate[4];
+        }
+        if (best != SurfaceProfiles.NO_GROUND) return best;
+        if (!surface.water()) return SurfaceProfiles.NO_GROUND;
+        // Further out, only sea level water carries on: a lake above sea level sits in a hollow of the world it came
+        // from, and the seam's own terrain has no such hollow to hold it
+        int seaTop = settings.getSeaLevel() - 1;
+        return Math.min(surface.waterTop(), seaTop);
+    }
+
+    /**
+     * The exact ground height and water surface of a column in a written chunk, or null if it's not an edge column
+     * of a profiled chunk.
+     */
+    @org.jetbrains.annotations.Nullable
+    private int[] writtenEdge(int wx, int wz) {
+        SurfaceProfiles.Profile profile = profiles.get(wx >> 4, wz >> 4);
+        if (profile == null) return null;
+        int x = wx & 15, z = wz & 15;
+        int edge, index;
+        if (x == 0) { edge = 0; index = z; }
+        else if (x == 15) { edge = 1; index = z; }
+        else if (z == 0) { edge = 2; index = x; }
+        else if (z == 15) { edge = 3; index = x; }
+        else return null;
+        short ground = profile.edges()[edge][index];
+        if (ground == SurfaceProfiles.NO_GROUND) return null;
+        return new int[]{ground, profile.edgeWater()[edge][index]};
     }
 
     /**
@@ -455,31 +604,83 @@ public class SeamGenerator {
      */
     public ChunkerColumn generate(int chunkX, int chunkZ) {
         int baseX = chunkX << 4, baseZ = chunkZ << 4;
-        int seaTop = settings.getSeaLevel() - 1;
         int minY = belowZero ? BelowZeroGenerator.MIN_Y : 0;
 
-        // Heights for this chunk plus a one block border (for slopes)
-        SurfaceProfiles.Profile west = profiles.get(chunkX - 1, chunkZ), east = profiles.get(chunkX + 1, chunkZ);
-        SurfaceProfiles.Profile north = profiles.get(chunkX, chunkZ - 1), south = profiles.get(chunkX, chunkZ + 1);
+        // Heights, surfaces and water for this chunk plus a border. The border is worked out exactly the way the
+        // neighbouring chunk works it out (or read from a written neighbour), so water and slopes agree across chunks.
+        int border = BANK_BLOCKS;
+        int size = 16 + border * 2;
+        int[][] grid = new int[size][size];
+        int[][] gridWater = new int[size][size];
+        boolean[][] gridWritten = new boolean[size][size];
+        Surface[][] surfaces = new Surface[16][16];
+        for (int x = -border; x < 16 + border; x++) {
+            for (int z = -border; z < 16 + border; z++) {
+                int wx = baseX + x, wz = baseZ + z;
+                int gx = x + border, gz = z + border;
+                if (targetChunks.contains(SurfaceProfiles.key(wx >> 4, wz >> 4))) {
+                    Surface surface = surfaceAt(wx, wz);
+                    if (x >= 0 && x <= 15 && z >= 0 && z <= 15) surfaces[x][z] = surface;
+                    int h = generatedHeight(wx, wz, minY);
+                    int waterTop = waterTopAt(wx, wz, surface);
+                    grid[gx][gz] = h;
+                    gridWater[gx][gz] = waterTop != SurfaceProfiles.NO_GROUND && h < waterTop ? waterTop : SurfaceProfiles.NO_GROUND;
+                } else {
+                    // A written (or empty) neighbour: use its exact edge
+                    int[] written = writtenEdge(wx, wz);
+                    gridWritten[gx][gz] = written != null;
+                    grid[gx][gz] = written == null ? generatedHeight(wx, wz, minY) : written[0];
+                    gridWater[gx][gz] = written == null ? SurfaceProfiles.NO_GROUND : written[1];
+                }
+            }
+        }
+
+        // Dry ground near water rises to a bank at the water's surface, sloping away one block per block, so water
+        // never stands as a wall and shores look natural
         int[][] heights = new int[18][18];
+        int[][] waterTops = new int[18][18];
+        boolean[][] bank = new boolean[16][16];
+        int[][] bankLevel = new int[16][16];
         for (int x = -1; x <= 16; x++) {
             for (int z = -1; z <= 16; z++) {
-                double h = blockHeight(baseX + x, baseZ + z);
-
-                // Next to a written chunk, ease into its exact edge heights over a few blocks
-                if (x >= 0 && x <= 15 && z >= 0 && z <= 15) {
-                    h = easeToEdge(h, west, 1, z, x);       // West neighbour's east edge, distance x
-                    h = easeToEdge(h, east, 0, z, 15 - x);  // East neighbour's west edge
-                    h = easeToEdge(h, north, 3, x, z);      // North neighbour's south edge
-                    h = easeToEdge(h, south, 2, x, 15 - z); // South neighbour's north edge
+                int gx = x + border, gz = z + border;
+                int h = grid[gx][gz];
+                int nearestLevel = SurfaceProfiles.NO_GROUND;
+                if (gridWater[gx][gz] == SurfaceProfiles.NO_GROUND && !gridWritten[gx][gz]) {
+                    int original = h;
+                    int cap = Integer.MAX_VALUE;
+                    int reach = Math.min(border, Math.min(Math.min(gx, gz), Math.min(size - 1 - gx, size - 1 - gz)));
+                    for (int dx = -reach; dx <= reach; dx++) {
+                        for (int dz = -reach; dz <= reach; dz++) {
+                            int distance = Math.max(Math.abs(dx), Math.abs(dz));
+                            if (gridWritten[gx + dx][gz + dz] && gridWater[gx + dx][gz + dz] == SurfaceProfiles.NO_GROUND) {
+                                // Stay joined to dry written terrain: rise at most a block per block away from it
+                                cap = Math.min(cap, grid[gx + dx][gz + dz] + distance);
+                            }
+                            int level = gridWater[gx + dx][gz + dz];
+                            if (level == SurfaceProfiles.NO_GROUND) continue;
+                            int lifted = level - (Math.max(Math.abs(dx), Math.abs(dz)) - 1);
+                            if (lifted > h) {
+                                h = lifted;
+                                nearestLevel = level;
+                            }
+                        }
+                    }
+                    h = Math.max(original, Math.min(h, cap));
                 }
-                heights[x + 1][z + 1] = Math.max(minY + 1, Math.min(300, (int) Math.round(h)));
+                heights[x + 1][z + 1] = h;
+                waterTops[x + 1][z + 1] = gridWater[gx][gz];
+                if (x >= 0 && x <= 15 && z >= 0 && z <= 15) {
+                    bank[x][z] = h > grid[gx][gz];
+                    bankLevel[x][z] = nearestLevel;
+                }
             }
         }
 
         ChunkerBlockIdentifier[][] top = new ChunkerBlockIdentifier[16][16];
         ChunkerBlockIdentifier[][] filler = new ChunkerBlockIdentifier[16][16];
         boolean[][] wet = new boolean[16][16];
+        int[][] columnWaterTop = new int[16][16];
         boolean anyWet = false;
         ChunkerBiome[][] cellBiomes = new ChunkerBiome[4][4];
         int minHeight = Integer.MAX_VALUE, maxHeight = Integer.MIN_VALUE;
@@ -487,9 +688,11 @@ public class SeamGenerator {
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
                 int h = heights[x + 1][z + 1];
+                Surface surface = surfaces[x][z];
+                int waterTop = waterTops[x + 1][z + 1];
+                boolean underwater = waterTop != SurfaceProfiles.NO_GROUND;
                 minHeight = Math.min(minHeight, h);
-                maxHeight = Math.max(maxHeight, h);
-                Surface surface = surfaceAt(baseX + x, baseZ + z);
+                maxHeight = Math.max(maxHeight, underwater ? waterTop : h);
 
                 int slope = Math.max(
                         Math.max(Math.abs(h - heights[x][z + 1]), Math.abs(h - heights[x + 2][z + 1])),
@@ -498,22 +701,23 @@ public class SeamGenerator {
                 ChunkerBlockIdentifier topBlock = surface.top();
                 ChunkerBlockIdentifier fillerBlock = surface.filler();
 
-                boolean underwater = surface.water() && h < seaTop;
                 wet[x][z] = underwater;
+                columnWaterTop[x][z] = waterTop;
                 anyWet |= underwater;
                 if (underwater) {
-                    // Under water: keep real sea floor materials, otherwise beaches near the surface and gravel deeper
+                    // Under water: keep real sea floor materials, otherwise sand near the surface and gravel deeper
                     if (!surface.water() || !TerrainBlocks.isSurfaceMaterial(topBlock) || isVegetatedSoil(topBlock)) {
-                        topBlock = h >= seaTop - 5 ? TerrainBlocks.SAND : TerrainBlocks.GRAVEL;
+                        topBlock = h >= waterTop - 5 ? TerrainBlocks.SAND : TerrainBlocks.GRAVEL;
                         fillerBlock = topBlock == TerrainBlocks.SAND ? TerrainBlocks.SAND : TerrainBlocks.GRAVEL;
                     }
                 } else if (slope >= 4) {
                     // Steep slopes become bare stone like cliffs
                     topBlock = TerrainBlocks.STONE;
                     fillerBlock = TerrainBlocks.STONE;
-                } else if (surface.water()) {
-                    // Above water level but the nearest edge was sea floor: use sand / grass instead
-                    topBlock = h <= seaTop + 2 ? TerrainBlocks.SAND : TerrainBlocks.GRASS_BLOCK;
+                } else if (surface.water() || bank[x][z]) {
+                    // A shore: above the water but the nearest edge was a lake / sea floor
+                    int level = bank[x][z] ? bankLevel[x][z] : surface.waterTop();
+                    topBlock = h <= level + 2 ? TerrainBlocks.SAND : TerrainBlocks.GRASS_BLOCK;
                     fillerBlock = topBlock == TerrainBlocks.SAND ? TerrainBlocks.SAND : TerrainBlocks.DIRT;
                 }
                 if (topBlock.getType() == ChunkerVanillaBlockType.SAND && fillerBlock.getType() != ChunkerVanillaBlockType.SAND) {
@@ -530,10 +734,10 @@ public class SeamGenerator {
 
         ChunkerColumn column = new ChunkerColumn(new ChunkCoordPair(chunkX, chunkZ));
         int minSection = minY >> 4;
-        int maxSection = (anyWet ? Math.max(maxHeight, seaTop) : maxHeight) >> 4;
+        int maxSection = maxHeight >> 4;
         for (int sectionY = minSection; sectionY <= maxSection; sectionY++) {
             ChunkerChunk chunk = new ChunkerChunk((byte) sectionY);
-            chunk.setPalette(buildSection(chunkX, chunkZ, sectionY, heights, top, filler, wet, minHeight, seaTop));
+            chunk.setPalette(buildSection(chunkX, chunkZ, sectionY, heights, top, filler, wet, minHeight, columnWaterTop));
             column.getChunks().put((byte) sectionY, chunk);
         }
 
@@ -556,7 +760,7 @@ public class SeamGenerator {
 
     private Palette<ChunkerBlockIdentifier> buildSection(int chunkX, int chunkZ, int sectionY, int[][] heights,
                                                           ChunkerBlockIdentifier[][] top, ChunkerBlockIdentifier[][] filler,
-                                                          boolean[][] wet, int minHeight, int seaTop) {
+                                                          boolean[][] wet, int minHeight, int[][] waterTop) {
         int sectionMin = sectionY << 4, sectionMax = sectionMin + 15;
 
         // Below zero uses the same deep generator as upgraded old worlds (fully underground sections as-is)
@@ -589,7 +793,7 @@ public class SeamGenerator {
                     if (hasLegacyFloor && y <= 4 && (y == 0 || noise.random(SALT_DETAIL + 9, baseX + x, y, baseZ + z) < (5 - y) / 5.0)) {
                         index = palette.getOrCreateKey(TerrainBlocks.BEDROCK);
                     } else if (y > h) {
-                        if (wet[x][z] && y <= seaTop) {
+                        if (wet[x][z] && y <= waterTop[x][z]) {
                             if (water == -1) water = palette.getOrCreateKey(TerrainBlocks.WATER);
                             index = water;
                         } else {

@@ -726,6 +726,7 @@ public class Messenger {
                 });
 
                 WorldMerger.MergeReport report = merger.run();
+                report.writeGuide(new File(request.getOutputPath()));
                 JsonObject output = new JsonObject();
                 if (worldConverter.isExceptions()) {
                     output.addProperty("anonymousId", request.getAnonymousId().toString());
@@ -743,9 +744,11 @@ public class Messenger {
                 JsonArray placements = new JsonArray();
                 for (MergeSource source : sources) {
                     JsonObject placement = new JsonObject();
-                    placement.addProperty("name", source.getName());
+                    placement.addProperty("name", source.getDisplayName());
                     placement.addProperty("x", source.getOffset().blockX());
                     placement.addProperty("z", source.getOffset().blockZ());
+                    placement.addProperty("spawnX", source.getSpawnX() + source.getOffset().blockX());
+                    placement.addProperty("spawnZ", source.getSpawnZ() + source.getOffset().blockZ());
                     placements.add(placement);
                 }
                 output.add("placements", placements);

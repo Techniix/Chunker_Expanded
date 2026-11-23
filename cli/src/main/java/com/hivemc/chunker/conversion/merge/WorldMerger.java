@@ -118,7 +118,7 @@ public class WorldMerger {
             if (overlap != null) throw new IllegalStateException("Placement failed: " + overlap);
         }
         for (MergeSource source : sources) {
-            log.accept("Placing " + source.getName() + " at offset " + source.getOffset());
+            log.accept("Placing " + source.describePlacement());
         }
 
         // 3. Output writer (NBT copying must be decided before writer resolvers are built)
@@ -229,6 +229,8 @@ public class WorldMerger {
                 @Override
                 public Task<WorldConversionHandler> convertLevel(ChunkerLevel level) {
                     source.setCavesAndCliffs(level.getSettings().CavesAndCliffs);
+                    source.setLevelName(level.getSettings().LevelName);
+                    source.setSpawn(level.getSettings().SpawnX, level.getSettings().SpawnZ);
                     if (firstLevel == null && source == sources.get(0)) firstLevel = level;
                     WorldConversionHandler worldHandler = new WorldConversionHandler() {
                         @Override
@@ -291,7 +293,7 @@ public class WorldMerger {
             blockEntities += transform.getBlockEntityCount();
             entities += transform.getEntityCount();
             belowZeroColumns += transform.getBelowZeroColumnCount();
-            lines.add(source.getName() + " -> offset " + source.getOffset());
+            lines.add(source.describePlacement());
         }
 
         void setSeamChunks(int seamChunks) {
@@ -320,6 +322,24 @@ public class WorldMerger {
 
         public List<String> getLines() {
             return lines;
+        }
+
+        /**
+         * Write a guide saying where each world ended up next to the merged world.
+         *
+         * @param directory the output directory.
+         */
+        public void writeGuide(File directory) {
+            StringBuilder builder = new StringBuilder("Merged worlds - where everything is now\n\n");
+            builder.append("Each world was moved as a whole, so builds keep their shape. Add the world's offset to an "
+                    + "old coordinate to find it in the merged world.\n\n");
+            for (String line : lines) builder.append("- ").append(line).append("\n");
+            builder.append("\n").append(this).append("\n");
+            try {
+                java.nio.file.Files.writeString(new File(directory, "merged_worlds.txt").toPath(), builder.toString());
+            } catch (java.io.IOException e) {
+                // The guide is only a convenience
+            }
         }
 
         @Override

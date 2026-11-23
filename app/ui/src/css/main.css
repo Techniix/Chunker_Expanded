@@ -1271,3 +1271,23 @@ input:checked + .switch:before {
 .merge_checkbox small {
     grid-column: 1 / span 2;
 }
+
+.merge_placements {
+    text-align: left;
+    max-width: 760px;
+    margin: 12px auto;
+}
+
+.merge_placements ul {
+    padding-left: 20px;
+}
+
+.merge_placements li {
+    margin: 6px 0;
+}
+
+.merge_placements code {
+    user-select: all;
+    background: rgba(0, 0, 0, 0.08);
+    padding: 1px 4px;
+}
