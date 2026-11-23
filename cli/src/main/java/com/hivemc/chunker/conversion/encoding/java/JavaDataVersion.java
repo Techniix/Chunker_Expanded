@@ -115,6 +115,10 @@ public class JavaDataVersion implements Comparable<JavaDataVersion> {
 
     // Last anvil file version
     public static final int LAST_ANVIL_FILE_VERSION = 19133;
+    /**
+     * The file version of McRegion worlds (Beta 1.3 to Release 1.1).
+     */
+    public static final int MCREGION_FILE_VERSION = 19132;
 
     private final int dataVersion;
     private final Version version;
@@ -211,8 +215,9 @@ public class JavaDataVersion implements Comparable<JavaDataVersion> {
             CompoundTag versionTag = Objects.requireNonNull(level).getCompound("Version");
             if (versionTag == null) {
                 // If this is null, it's likely an older version or not a valid NBT dat
-                if (level.getInt("version", -1) != LAST_ANVIL_FILE_VERSION) {
-                    // Currently only the last anvil file format is handled (as 1.8.8)
+                int fileVersion = level.getInt("version", -1);
+                if (fileVersion != LAST_ANVIL_FILE_VERSION && fileVersion != MCREGION_FILE_VERSION && !isAlphaWorld(directory, level)) {
+                    // Anvil (1.2 - 1.8), McRegion (Beta 1.3 - 1.1) and Alpha worlds are all read by the 1.8.8 reader
                     return Optional.empty();
                 }
 
@@ -225,6 +230,14 @@ public class JavaDataVersion implements Comparable<JavaDataVersion> {
         } catch (Exception e) {
             return Optional.empty();
         }
+    }
+
+    /**
+     * Whether a world is from before Beta 1.3: its level.dat has no file version, but it has a seed and chunk files.
+     */
+    private static boolean isAlphaWorld(File directory, CompoundTag level) {
+        return !level.contains("version") && level.contains("RandomSeed")
+                && com.hivemc.chunker.conversion.encoding.java.base.reader.legacy.AlphaChunkFiles.isAlphaDimension(directory);
     }
 
     /**

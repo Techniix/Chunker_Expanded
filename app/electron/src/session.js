@@ -744,6 +744,11 @@ export class Session {
                         return false;
                     }
 
+                    // Don't include Alpha / early Beta chunk files (one file per chunk)
+                    if (/^c\.-?[0-9a-z]+\.-?[0-9a-z]+\.dat$/.test(parts[parts.length - 1])) {
+                        return false;
+                    }
+
                     // Don't include in-game map data
                     if (parts.includes("data") && parts.length === 2 || parts.includes("maps") && parts.length === 4) {
                         let fileName = parts[parts.length - 1];

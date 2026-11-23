@@ -20,6 +20,9 @@ Supported Formats:
     - 1.21.0 - 1.21.130
     - 1.26.0 - 1.26.70
 - Java
+    - Alpha 1.0 - Beta 1.2 (reading only, chunk files)
+    - Beta 1.3 - 1.1 (reading only, McRegion; biomes weren't saved so they're estimated from the terrain)
+    - 1.2.1 - 1.7.10 (reading only)
     - 1.8.8
     - 1.9.0 - 1.9.3
     - 1.10.0 - 1.10.2

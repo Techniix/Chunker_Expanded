@@ -2,6 +2,8 @@ package com.hivemc.chunker.conversion.encoding.java.base.reader;
 
 import com.hivemc.chunker.conversion.encoding.base.Converter;
 import com.hivemc.chunker.conversion.encoding.base.reader.WorldReader;
+import com.hivemc.chunker.conversion.encoding.java.base.reader.legacy.AlphaChunkFiles;
+import com.hivemc.chunker.conversion.encoding.java.base.reader.legacy.LegacyChunkUpgrader;
 import com.hivemc.chunker.conversion.encoding.java.base.reader.util.MCAReader;
 import com.hivemc.chunker.conversion.encoding.java.base.resolver.JavaResolvers;
 import com.hivemc.chunker.conversion.handlers.ColumnConversionHandler;
@@ -25,6 +27,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -35,6 +38,10 @@ public class JavaWorldReader implements WorldReader {
     protected final JavaResolvers resolvers;
     protected final File dimensionFolder;
     protected final Dimension dimension;
+    /**
+     * The extension of the region files being read: ".mca" (Anvil) or ".mcr" (McRegion, Beta 1.3 to Release 1.1).
+     */
+    protected String regionExtension = ".mca";
 
     /**
      * Create a new world reader.
@@ -63,8 +70,18 @@ public class JavaWorldReader implements WorldReader {
         File[] folders = getMCAFolders();
         Set<String> knownRegionFiles = new ObjectOpenHashSet<>();
 
+        // Worlds from before Release 1.2 use McRegion files, or one file per chunk before Beta 1.3 (Alpha)
+        if (isLegacyCapable() && !hasFiles(folders, ".mca")) {
+            if (hasFiles(folders, ".mcr")) {
+                regionExtension = ".mcr";
+            } else if (AlphaChunkFiles.isAlphaDimension(dimensionFolder)) {
+                readAlphaWorld(worldConversionHandler);
+                return;
+            }
+        }
+
         for (File folder : folders) {
-            File[] regionFiles = folder.listFiles((parent, fileName) -> fileName.endsWith(".mca"));
+            File[] regionFiles = folder.listFiles((parent, fileName) -> fileName.endsWith(regionExtension));
             if (regionFiles != null) {
                 for (File regionFile : regionFiles) {
                     String[] parts = regionFile.getName().split("\\.");
@@ -172,7 +189,7 @@ public class JavaWorldReader implements WorldReader {
         File[] mcaFolders = getMCAFolders();
         for (int i = 0; i < mcaFolders.length; i++) {
             File folder = mcaFolders[i];
-            File temp = new File(folder, "r." + region.regionX() + "." + region.regionZ() + ".mca");
+            File temp = new File(folder, "r." + region.regionX() + "." + region.regionZ() + regionExtension);
 
             // Only add the file if it's known to exist
             if (knownFiles.contains(temp.getAbsolutePath())) {
@@ -293,12 +310,83 @@ public class JavaWorldReader implements WorldReader {
                             }
                             return combineColumnCompounds(compoundTags);
                         })
-                        .then("Creating Column Reader", TaskWeight.LOW, (column) -> createColumnReader(columnsCoords, column))
+                        .then("Creating Column Reader", TaskWeight.LOW, (column) -> createColumnReader(columnsCoords, prepareColumnNBT(column)))
                         .thenConsume("Reading Column", TaskWeight.HIGHER, (columnReader) -> columnReader.readColumn(columnConversionHandler));
             });
         }
 
         return mcaReaders;
+    }
+
+    /**
+     * Whether this reader can read the formats from before Anvil (only the oldest, 1.8 based, reader can).
+     *
+     * @return true if McRegion / Alpha worlds can be read.
+     */
+    protected boolean isLegacyCapable() {
+        return resolvers.dataVersion().compareTo(com.hivemc.chunker.conversion.encoding.java.JavaDataVersion.V1_9) < 0;
+    }
+
+    private static boolean hasFiles(File[] folders, String extension) {
+        for (File folder : folders) {
+            File[] files = folder.listFiles((parent, fileName) -> fileName.endsWith(extension));
+            if (files != null && files.length > 0) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Upgrade the NBT of a column from an older format before it is read.
+     *
+     * @param columnNBT the NBT read from the file.
+     * @return the NBT to read.
+     */
+    protected CompoundTag prepareColumnNBT(CompoundTag columnNBT) {
+        if (columnNBT == null || !isLegacyCapable()) return columnNBT;
+        CompoundTag result = LegacyChunkUpgrader.isPreAnvil(columnNBT) ? LegacyChunkUpgrader.toAnvil(columnNBT) : columnNBT;
+        LegacyChunkUpgrader.fixPre18(result);
+        return result;
+    }
+
+    /**
+     * Read a world from before Beta 1.3, where every chunk is its own file.
+     *
+     * @param worldConversionHandler the handler to submit the world to.
+     */
+    protected void readAlphaWorld(WorldConversionHandler worldConversionHandler) {
+        Map<RegionCoordPair, List<AlphaChunkFiles.ChunkFile>> byRegion = AlphaChunkFiles.findChunks(dimensionFolder);
+        Set<RegionCoordPair> regions = new ObjectOpenHashSet<>(byRegion.keySet());
+        ChunkerWorld chunkerWorld = new ChunkerWorld(dimension, regions);
+
+        Task<ColumnConversionHandler> convertWorld = worldConversionHandler.convertWorld(chunkerWorld);
+        Task<Void> regionProcessing = convertWorld.thenConsume("Reading chunk files", TaskWeight.HIGHER, (columnConversionHandler) -> {
+            if (columnConversionHandler == null) return;
+            ProgressiveTask<Void> reading = Task.async("Reading chunk files", TaskWeight.HIGHER, () -> {
+                for (Map.Entry<RegionCoordPair, List<AlphaChunkFiles.ChunkFile>> entry : byRegion.entrySet()) {
+                    RegionCoordPair region = entry.getKey();
+                    if (!converter.shouldProcessRegion(dimension, region)) continue;
+                    Task.async("Reading region chunks", TaskWeight.NORMAL, () -> {
+                        for (AlphaChunkFiles.ChunkFile chunkFile : entry.getValue()) {
+                            ChunkCoordPair coords = new ChunkCoordPair(chunkFile.chunkX(), chunkFile.chunkZ());
+                            if (!converter.shouldProcessColumn(dimension, coords)) continue;
+                            Task.async("Processing column " + coords, TaskWeight.NORMAL, () -> {
+                                CompoundTag columnNBT;
+                                try {
+                                    columnNBT = AlphaChunkFiles.read(chunkFile.file());
+                                } catch (Exception e) {
+                                    converter.logNonFatalException(new Exception("Failed to read chunk file " + chunkFile.file(), e));
+                                    return;
+                                }
+                                if (columnNBT == null) return;
+                                createColumnReader(coords, prepareColumnNBT(columnNBT)).readColumn(columnConversionHandler);
+                            });
+                        }
+                    }).then("Region - Flushing", TaskWeight.MEDIUM, () -> columnConversionHandler.flushRegion(region));
+                }
+            });
+            reading.then("Flushing columns", TaskWeight.MEDIUM, columnConversionHandler::flushColumns);
+        });
+        regionProcessing.then("Flushing world", TaskWeight.MEDIUM, () -> worldConversionHandler.flushWorld(chunkerWorld));
     }
 
     /**
