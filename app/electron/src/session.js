@@ -1,5 +1,5 @@
 import {spawn} from "child_process"
-import {freemem, totalmem} from "os"
+import {totalmem} from "os"
 import {app} from "electron"
 import path from "path"
 import fs from "fs-extra"
@@ -72,27 +72,13 @@ export class Session {
 
         // Attach JVM options (calculate memory if not set)
         if (javaOptions.indexOf("-Xm") === -1) {
-            let maximumMB;
-            if (process.platform !== "darwin") {
-                // Use 75% of available memory (but ensure there is at least 1024MB free for the system)
-                const freeMemoryMB = freemem() / (1024 * 1024);
-                const desiredMB = freeMemoryMB * 0.75;
-
-                // Ensure we leave at least 1GB free in memory for the system
-                const reservedMB = 1024;
-
-                // Ensure the VM gets at least 512MB of ram
-                const requiredMB = 512;
-                maximumMB = Math.max(Math.min(freeMemoryMB - reservedMB, desiredMB), requiredMB);
-            } else {
-                // Use 75% of total memory (but ensure there is 4096MB free for the system on mac)
-                // Note: This is because on MacOS freemem() can be lower due to file caching etc
-                const totalMemoryMB = totalmem() / (1024 * 1024);
-
-                // Ensure the VM gets at least 512MB of ram
-                const requiredMB = 512;
-                maximumMB = Math.max(Math.min(totalMemoryMB - 4096, totalMemoryMB * 0.75), requiredMB);
-            }
+            // The JVM only takes memory from the system as it needs it, so the limit is based on the total memory
+            // rather than what happens to be free right now (which can be very low on Windows). Large merges need it.
+            // Use 75% of total memory, but leave at least 3GB (4GB on MacOS) for the system and at least 512MB for Java.
+            const totalMemoryMB = totalmem() / (1024 * 1024);
+            const reservedMB = process.platform === "darwin" ? 4096 : 3072;
+            const requiredMB = 512;
+            let maximumMB = Math.max(Math.min(totalMemoryMB - reservedMB, totalMemoryMB * 0.75), requiredMB);
 
             let generatedOptions = "-Xmx" + Math.floor(maximumMB) + "M";
             javaOptions = javaOptions + (javaOptions.length > 0 ? " " : "") + generatedOptions;

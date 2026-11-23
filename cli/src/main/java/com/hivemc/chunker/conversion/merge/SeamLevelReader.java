@@ -19,6 +19,7 @@ import it.unimi.dsi.fastutil.longs.LongArrayList;
 
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -27,6 +28,10 @@ import java.util.Set;
  * writer as the real worlds. It is run as the final pass of a merge.
  */
 public class SeamLevelReader implements LevelReader {
+    /**
+     * How many seam regions are generated at the same time.
+     */
+    private static final int MAX_REGIONS_IN_FLIGHT = Math.max(2, Math.min(4, Runtime.getRuntime().availableProcessors() / 2));
     private final SeamGenerator generator;
     private final ChunkerLevel baseLevel;
     private final boolean belowZero;
@@ -54,6 +59,24 @@ public class SeamLevelReader implements LevelReader {
         this.supportedBiomes = supportedBiomes;
     }
 
+    /**
+     * Generate every {@code step}th region starting at {@code index}, one after another.
+     */
+    private void generateLane(List<Map.Entry<Long, LongArrayList>> entries, int index, int step,
+                              ColumnConversionHandler columnConversionHandler) {
+        if (index >= entries.size()) return;
+        Map.Entry<Long, LongArrayList> entry = entries.get(index);
+        RegionCoordPair region = new RegionCoordPair(SurfaceProfiles.keyX(entry.getKey()), SurfaceProfiles.keyZ(entry.getKey()));
+        LongArrayList chunks = entry.getValue();
+        Task.async("Generating seam region", TaskWeight.NORMAL, () -> {
+                    for (int i = 0; i < chunks.size(); i++) {
+                        long key = chunks.getLong(i);
+                        columnConversionHandler.convertColumn(generator.generate(SurfaceProfiles.keyX(key), SurfaceProfiles.keyZ(key)));
+                    }
+                }).then("Seam region - Flushing", TaskWeight.MEDIUM, () -> columnConversionHandler.flushRegion(region))
+                .then("Next seam region", TaskWeight.NORMAL, () -> generateLane(entries, index + step, step, columnConversionHandler));
+    }
+
     @Override
     public void readLevel(LevelConversionHandler levelConversionHandler) {
         // The seam level copies the base settings, but always uses the height of the output
@@ -76,15 +99,13 @@ public class SeamLevelReader implements LevelReader {
                 if (columnConversionHandler == null) return;
 
                 ProgressiveTask<Void> generating = Task.async("Generating seam regions", TaskWeight.HIGHER, () -> {
-                    for (Map.Entry<Long, LongArrayList> entry : regions.entrySet()) {
-                        RegionCoordPair region = new RegionCoordPair(SurfaceProfiles.keyX(entry.getKey()), SurfaceProfiles.keyZ(entry.getKey()));
-                        LongArrayList chunks = entry.getValue();
-                        Task.async("Generating seam region", TaskWeight.NORMAL, () -> {
-                            for (int i = 0; i < chunks.size(); i++) {
-                                long key = chunks.getLong(i);
-                                columnConversionHandler.convertColumn(generator.generate(SurfaceProfiles.keyX(key), SurfaceProfiles.keyZ(key)));
-                            }
-                        }).then("Seam region - Flushing", TaskWeight.MEDIUM, () -> columnConversionHandler.flushRegion(region));
+                    // Generating is much faster than writing, so only a few regions are generated at once: each lane
+                    // starts its next region once the previous one has been written. Without this every seam column
+                    // would be generated up front and held in memory waiting to be written.
+                    List<Map.Entry<Long, LongArrayList>> entries = new ArrayList<>(regions.entrySet());
+                    int lanes = Math.max(1, Math.min(MAX_REGIONS_IN_FLIGHT, entries.size()));
+                    for (int lane = 0; lane < lanes; lane++) {
+                        generateLane(entries, lane, lanes, columnConversionHandler);
                     }
                 });
                 generating.then("Flushing seam columns", TaskWeight.MEDIUM, columnConversionHandler::flushColumns);

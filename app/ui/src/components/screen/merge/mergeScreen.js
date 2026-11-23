@@ -72,9 +72,31 @@ export class MergeScreen extends BaseScreen {
         if (!api.isConnected()) {
             api.connect((errorCode) => {
                 if (!api.isConnected()) {
-                    this.app.showError("Failed to connect to backend", "Unable to run chunker-cli backend, please try closing Chunker and opening it again.", null, undefined, false, true);
+                    this.showBackendError(errorCode);
                 }
             });
+        }
+    }
+
+    /**
+     * Explain why the backend stopped. The connect callback also fires when the backend dies part way through a merge,
+     * so this reports the real cause (out of memory, killed...) rather than a generic connection failure.
+     */
+    showBackendError(errorCode) {
+        let merging = this.state.merging;
+        if (merging) {
+            this.setState({merging: false});
+            this.app.setStage(1);
+        }
+        let title = merging ? "Merge stopped" : "Failed to connect to backend";
+        if (errorCode === 12) {
+            this.app.showError("Out of memory", "Chunker ran out of memory while merging. Close other programs and try again, merge fewer or smaller worlds at once, or use the command-line merge with more memory (for example java -Xmx8G -jar chunker-cli.jar merge ...).", null, undefined, false, true);
+        } else if (errorCode === -100) {
+            this.app.showError(title, "Unable to start the chunker-cli backend (it may be missing from the build). Please try closing Chunker and opening it again.", null, undefined, false, true);
+        } else if (errorCode === 1) {
+            this.app.showError(title, "The backend process stopped unexpectedly (exit code 1). The details are in Chunker's log file (main.log in the Chunker logs folder).", null, undefined, false, true);
+        } else {
+            this.app.showError(title, "The backend process stopped unexpectedly (exit code " + errorCode + "). The details are in Chunker's log file (main.log in the Chunker logs folder).", null, undefined, false, true);
         }
     }
 
