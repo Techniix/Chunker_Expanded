@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node src/hook/pre-build.js && electron .",
     "package": "node src/hook/pre-build.js && electron-builder --dir",
-    "publish": "node src/hook/pre-build.js && electron-builder",
+    "publish": "node src/hook/pre-build.js && electron-builder --publish never",
     "test": "node --test"
   },
   "keywords": [],
@@ -22,6 +22,7 @@
   },
   "build": {
     "npmRebuild": false,
+    "publish": null,
     "productName": "Chunker",
     "appId": "app.Chunker",
     "icon": "../ui/build/favicon.png",
