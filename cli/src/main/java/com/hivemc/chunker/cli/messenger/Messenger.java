@@ -65,7 +65,24 @@ public class Messenger {
             Scanner scanner = new Scanner(System.in);
             while (scanner.hasNextLine()) {
                 String line = scanner.nextLine();
-                BasicMessage message = GSON.fromJson(line, BasicMessage.class);
+                BasicMessage message;
+                try {
+                    message = GSON.fromJson(line, BasicMessage.class);
+                } catch (JsonParseException e) {
+                    // A malformed request shouldn't take down the whole backend, reply with an error instead
+                    e.printStackTrace();
+                    UUID requestId = null;
+                    try {
+                        JsonElement id = JsonParser.parseString(line).getAsJsonObject().get("requestId");
+                        if (id != null && id.isJsonPrimitive()) requestId = UUID.fromString(id.getAsString());
+                    } catch (Exception ignored) {
+                        // No request ID to reply to
+                    }
+                    if (requestId != null) {
+                        write(new ErrorResponse(requestId, false, "Invalid request: " + e.getMessage(), null, e.getMessage(), printStackTrace(e)));
+                    }
+                    continue;
+                }
                 switch (message.getType()) {
                     case DETECT_VERSION -> {
                         DetectVersionRequest detectVersionRequest = (DetectVersionRequest) message;

@@ -907,7 +907,7 @@ export class Session {
             skipMaps: data.hasOwnProperty("mapConversion") && !data["mapConversion"],
             skipLootTables: data.hasOwnProperty("lootTableConversion") && !data["lootTableConversion"],
             enableCompact: !data.hasOwnProperty("enableCompact") || data["enableCompact"],
-            nbtSettings: this._worldSettings
+            nbtSettings: this._worldSettings ?? undefined
         };
         this._finalName = data["outputName"] ?? this._finalName ?? "merged";
         this.sendToProcess(request, (response) => this.zipOutput(response, requestId, outputType, worldOutputPath));

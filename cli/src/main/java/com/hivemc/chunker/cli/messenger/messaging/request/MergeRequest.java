@@ -1,5 +1,6 @@
 package com.hivemc.chunker.cli.messenger.messaging.request;
 
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.hivemc.chunker.cli.messenger.messaging.BasicMessage;
 import org.jetbrains.annotations.Nullable;
@@ -34,7 +35,7 @@ public class MergeRequest extends BasicMessage {
     @Nullable
     private final Boolean enableCompact;
     @Nullable
-    private final JsonObject nbtSettings;
+    private final JsonElement nbtSettings; // A JsonElement so an explicit null in the request is accepted
 
     public MergeRequest(UUID anonymousId, List<String> inputPaths, String outputPath, String outputType, boolean copyNbt,
                         @Nullable Integer gapChunks, @Nullable Integer seamWidthChunks, @Nullable Boolean seams,
@@ -128,6 +129,6 @@ public class MergeRequest extends BasicMessage {
 
     @Nullable
     public JsonObject getNbtSettings() {
-        return nbtSettings;
+        return nbtSettings != null && nbtSettings.isJsonObject() ? nbtSettings.getAsJsonObject() : null;
     }
 }
