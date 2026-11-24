@@ -905,6 +905,7 @@ export class Session {
             gapChunks: data["gapChunks"],
             seamWidthChunks: data["seamWidthChunks"],
             seams: data["seams"],
+            maxCorridorChunks: data["maxCorridorChunks"],
             belowZero: data["belowZero"],
             layout: data["layout"],
             alignRegions: data["alignRegions"],

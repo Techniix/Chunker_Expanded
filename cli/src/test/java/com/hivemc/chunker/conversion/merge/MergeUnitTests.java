@@ -165,10 +165,10 @@ public class MergeUnitTests {
         // World A: chunks x 0..3 at height 10, world B: chunks x 10..13 at height 50, both z 0..3
         for (int x = 0; x < 4; x++) {
             for (int z = 0; z < 4; z++) {
-                ChunkerColumn a = flatColumn(x, z, 10);
+                ChunkerColumn a = flatColumn(x, z, 70);
                 profiles.markOccupied(x, z);
                 profiles.record(a, 0, ChunkerBiome.ChunkerVanillaBiome.PLAINS);
-                ChunkerColumn b = flatColumn(x + 10, z, 50);
+                ChunkerColumn b = flatColumn(x + 10, z, 110);
                 profiles.markOccupied(x + 10, z);
                 profiles.record(b, 0, ChunkerBiome.ChunkerVanillaBiome.DESERT);
             }
@@ -187,17 +187,17 @@ public class MergeUnitTests {
             assertTrue(height >= previous - 0.5, "Height should not drop at x=" + x + " (" + height + " < " + previous + ")");
             previous = height;
         }
-        assertEquals(10, generator.blockHeight(64, 24), 3.0, "Seam should start at world A's height");
-        assertEquals(50, generator.blockHeight(159, 24), 3.0, "Seam should end at world B's height");
+        assertEquals(70, generator.blockHeight(64, 24), 3.0, "Seam should start at world A's height");
+        assertEquals(110, generator.blockHeight(159, 24), 3.0, "Seam should end at world B's height");
         double mid = generator.blockHeight(112, 24);
-        assertTrue(mid > 20 && mid < 40, "Middle of the seam should be between the two worlds, got " + mid);
+        assertTrue(mid > 80 && mid < 100, "Middle of the seam should be between the two worlds, got " + mid);
 
         // Generated column is solid below the surface, has deepslate / bedrock below zero and no unexpected water
         ChunkerColumn column = generator.generate(7, 1);
         assertEquals(-4, column.getChunks().firstByteKey());
         assertEquals(ChunkerVanillaBlockType.BEDROCK, column.getBlock(3, -64, 3).getType());
         int surface = column.getHighestBlock(8, 8, block -> !block.isAir()).first();
-        assertTrue(surface > 10 && surface < 50);
+        assertTrue(surface > 70 && surface < 110);
         assertNotEquals(ChunkerVanillaBlockType.WATER, column.getBlock(8, surface, 8).getType());
 
         // Biomes come from the nearest world: plains near A, desert near B
@@ -395,5 +395,35 @@ public class MergeUnitTests {
         int water = 0;
         for (int y = ground + 1; TerrainBlocks.isWaterLike(column.getBlock(x & 15, y, z & 15)); y++) water = y;
         return new int[]{ground, water};
+    }
+
+    @Test
+    public void testSeamGroundBelowSeaLevelIsWater() {
+        SurfaceProfiles profiles = new SurfaceProfiles();
+        // A world whose land is at 66 next to a sea floor at 40 (dry, as if the sea was drained): the seam must not
+        // leave dry ground below sea level, which would hold back water as walls
+        for (int x = 0; x < 4; x++) {
+            for (int z = 0; z < 4; z++) {
+                profiles.markOccupied(x, z);
+                profiles.record(flatColumn(x, z, x < 2 ? 66 : 40), 0, ChunkerBiome.ChunkerVanillaBiome.PLAINS);
+            }
+        }
+        SeamGenerator generator = new SeamGenerator(profiles, new MergeSettings().setSeamWidthChunks(6), true, ChunkerBiome.ChunkerVanillaBiome.PLAINS);
+        generator.prepare();
+        for (int chunkX = 4; chunkX < 9; chunkX++) {
+            ChunkerColumn column = generator.generate(chunkX, 2);
+            for (int x = 0; x < 16; x++) {
+                for (int z = 0; z < 16; z++) {
+                    int ground = column.getHighestBlock(x, z, TerrainBlocks::isGround).first();
+                    if (ground < 62) {
+                        assertTrue(TerrainBlocks.isWaterLike(column.getBlock(x, 62, z)), "Ground at " + ground + " below sea level should be under water");
+                    }
+                }
+            }
+        }
+        // Dry land next to it keeps a land biome (not ocean) so it gets plants
+        assertFalse(SeamGenerator.isWatery(generator.generate(0, -2).getBiomes().as4X4Palette(8).get(0, 0, 0)));
+        // Land that ended up deep under water is ocean
+        assertTrue(SeamGenerator.isWatery(generator.generate(5, 2).getBiomes().as4X4Palette(6).get(0, 0, 0)));
     }
 }

@@ -70,6 +70,9 @@ public class MergeCLI implements Callable<Integer> {
     @CommandLine.Option(names = "--no-below-zero", description = "Don't generate terrain below Y=0 for pre-1.18 worlds.")
     private boolean noBelowZero;
 
+    @CommandLine.Option(names = "--leave-gaps-to-game", description = "Java output only, experimental: only make a narrow blended ring around each world and leave the space between worlds for Minecraft to generate (with structures), blending into the ring. Same as --seam-width 3 --max-corridor 0 --java-blending.")
+    private boolean leaveGapsToGame;
+
     @CommandLine.Option(names = "--java-blending", description = "Experimental: write Java blending_data so terrain the game generates later blends into the merged chunks.")
     private boolean javaBlending;
 
@@ -125,6 +128,9 @@ public class MergeCLI implements Callable<Integer> {
                 .setScaleNether(!noNetherScale)
                 .setSeaLevel(seaLevel);
         if (seed != null) settings.setSeed(seed);
+        if (leaveGapsToGame) {
+            settings.setSeamWidthChunks(3).setMaxCorridorChunks(0).setJavaBlendingHints(true);
+        }
 
         WorldConverter converter = new WorldConverter(UUID.randomUUID());
         converter.setCompactionSignal((started) -> System.out.println(started ? "Compacting world, this may take a while..." : "Finished compacting world."));

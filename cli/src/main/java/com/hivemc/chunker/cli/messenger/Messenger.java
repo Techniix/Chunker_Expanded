@@ -691,6 +691,7 @@ public class Messenger {
         if (request.getLayout() != null) settings.setLayout(MergeSettings.Layout.valueOf(request.getLayout().toUpperCase(Locale.ROOT)));
         if (request.getAlignRegions() != null) settings.setAlignRegions(request.getAlignRegions());
         settings.setJavaBlendingHints(request.isJavaBlending());
+        if (request.getMaxCorridorChunks() != null) settings.setMaxCorridorChunks(request.getMaxCorridorChunks());
 
         List<MergeSource> sources = new ArrayList<>();
         for (String input : request.getInputPaths()) {

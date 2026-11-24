@@ -123,6 +123,13 @@ public class SurfaceProfiles {
         });
     }
 
+    /**
+     * The index of a biome in the biome table (adding it if needed).
+     */
+    public short biomeId(ChunkerBiome biome) {
+        return indexOf(biome);
+    }
+
     private short indexOf(ChunkerBiome biome) {
         return biomeIndex.computeIfAbsent(biome, key -> {
             synchronized (biomeTable) {

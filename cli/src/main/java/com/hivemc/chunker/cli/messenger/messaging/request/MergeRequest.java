@@ -24,6 +24,8 @@ public class MergeRequest extends BasicMessage {
     @Nullable
     private final Boolean seams;
     @Nullable
+    private final Integer maxCorridorChunks;
+    @Nullable
     private final Boolean belowZero;
     @Nullable
     private final String layout;
@@ -50,6 +52,7 @@ public class MergeRequest extends BasicMessage {
         this.gapChunks = gapChunks;
         this.seamWidthChunks = seamWidthChunks;
         this.seams = seams;
+        this.maxCorridorChunks = null;
         this.belowZero = belowZero;
         this.layout = layout;
         this.alignRegions = alignRegions;
@@ -108,6 +111,16 @@ public class MergeRequest extends BasicMessage {
     @Nullable
     public Integer getAlignRegions() {
         return alignRegions;
+    }
+
+    /**
+     * The widest gap between worlds that is filled with generated terrain (0 to leave gaps for the game to generate).
+     *
+     * @return the number of chunks or null for the default.
+     */
+    @Nullable
+    public Integer getMaxCorridorChunks() {
+        return maxCorridorChunks;
     }
 
     public boolean isJavaBlending() {

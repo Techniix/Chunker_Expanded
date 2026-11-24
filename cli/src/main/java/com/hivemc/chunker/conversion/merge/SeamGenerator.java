@@ -68,6 +68,10 @@ public class SeamGenerator {
     private short[] labelTop;
     private short[] labelFiller;
     private short[] labelBiome;
+    // The nearest dry land's biome and plant cover: used for seam land whose nearest edge was a sea or river
+    private short[] landBiome;
+    private float[] landTrees;
+    private float[] landPlants;
     private short[] labelWaterTop;
 
     /**
@@ -109,6 +113,7 @@ public class SeamGenerator {
         if (targetChunks.isEmpty()) return 0;
         buildCells();
         floodFill();
+        floodLand();
         smoothRoughness();
         solveHeights();
         return targetChunks.size();
@@ -215,6 +220,9 @@ public class SeamGenerator {
         labelTop = new short[count];
         labelFiller = new short[count];
         labelBiome = new short[count];
+        landBiome = new short[count];
+        landTrees = new float[count];
+        landPlants = new float[count];
         labelWaterTop = new short[count];
     }
 
@@ -314,6 +322,63 @@ public class SeamGenerator {
                 queue.enqueue(j);
             }
         }
+    }
+
+    /**
+     * Label every cell with the nearest dry land's biome and plant cover. Without this, land generated next to a sea
+     * or river gets an ocean / river biome: bare grass with no trees or plants, and the wrong colours and mobs.
+     */
+    private void floodLand() {
+        int count = cellX.length;
+        int[] landDistance = new int[count];
+        java.util.Arrays.fill(landDistance, Integer.MAX_VALUE);
+        IntArrayFIFOQueue queue = new IntArrayFIFOQueue();
+        for (int i = 0; i < count; i++) {
+            for (int[] n : NEIGHBOURS) {
+                int nx = cellX[i] + n[0], nz = cellZ[i] + n[1];
+                if (cellIndex.get(cellKey(nx, nz)) != UNKNOWN) continue;
+                SurfaceProfiles.Profile profile = profiles.get(nx >> 2, nz >> 2);
+                if (profile == null) continue;
+                int sample = ((nz & 3) << 2) | (nx & 3);
+                if (profile.ground()[sample] == SurfaceProfiles.NO_GROUND || profile.water(sample)) continue;
+                if (isWatery(profiles.biome(profile.biome()[sample]))) continue;
+                landDistance[i] = 1;
+                landBiome[i] = profile.biome()[sample];
+                landTrees[i] = profile.treeCover();
+                landPlants[i] = profile.plantCover();
+                queue.enqueue(i);
+                break;
+            }
+        }
+        while (!queue.isEmpty()) {
+            int i = queue.dequeueInt();
+            for (int[] n : NEIGHBOURS) {
+                int j = cellIndex.get(cellKey(cellX[i] + n[0], cellZ[i] + n[1]));
+                if (j == UNKNOWN || landDistance[j] != Integer.MAX_VALUE) continue;
+                landDistance[j] = landDistance[i] + 1;
+                landBiome[j] = landBiome[i];
+                landTrees[j] = landTrees[i];
+                landPlants[j] = landPlants[i];
+                queue.enqueue(j);
+            }
+        }
+        // Worlds with no dry land at all: plains
+        short plains = profiles.biomeId(ChunkerBiome.ChunkerVanillaBiome.PLAINS);
+        for (int i = 0; i < count; i++) {
+            if (landDistance[i] == Integer.MAX_VALUE) {
+                landBiome[i] = plains;
+                landTrees[i] = 0.05f;
+                landPlants[i] = 0.3f;
+            }
+        }
+    }
+
+    /**
+     * Whether a biome is a water biome (sea, river, beach) that shouldn't be given to dry land.
+     */
+    static boolean isWatery(ChunkerBiome biome) {
+        String name = biome.toString().toUpperCase(java.util.Locale.ROOT);
+        return name.contains("OCEAN") || name.contains("RIVER") || name.contains("BEACH") || name.contains("SHORE");
     }
 
     /**
@@ -472,7 +537,8 @@ public class SeamGenerator {
     /**
      * Surface attributes looked up at a domain-warped position so borders between worlds look natural.
      */
-    private record Surface(ChunkerBlockIdentifier top, ChunkerBlockIdentifier filler, ChunkerBiome biome, int waterTop) {
+    private record Surface(ChunkerBlockIdentifier top, ChunkerBlockIdentifier filler, ChunkerBiome biome, int waterTop,
+                           ChunkerBiome landBiome) {
         boolean water() {
             return waterTop != SurfaceProfiles.NO_GROUND;
         }
@@ -494,9 +560,10 @@ public class SeamGenerator {
         // Edge materials (a shore, a path, a snow cap) only reach a short way, then the biome's normal surface is used
         double reach = MATERIAL_REACH_BLOCKS * (0.7 + 0.6 * (noise.noise2(SALT_WARP_X + 7, x / 10.0, z / 10.0) * 0.5 + 0.5));
         if (distanceBlocks > reach) {
-            Surface natural = biomeSurface(surface.biome());
-            // Only keep lake / sea water where the terrain stays below sea level
-            return new Surface(natural.top(), natural.filler(), surface.biome(), distanceBlocks < reach * 3 ? surface.waterTop() : SurfaceProfiles.NO_GROUND);
+            // Away from the edge: the usual surface of the nearest land's biome (water is decided by sea level)
+            Surface natural = biomeSurface(surface.landBiome());
+            return new Surface(natural.top(), natural.filler(), surface.biome(), distanceBlocks < reach * 3 ? surface.waterTop() : SurfaceProfiles.NO_GROUND,
+                    surface.landBiome());
         }
         return surface;
     }
@@ -508,27 +575,63 @@ public class SeamGenerator {
      */
     private static Surface biomeSurface(ChunkerBiome biome) {
         String name = biome.toString().toUpperCase(java.util.Locale.ROOT);
-        if (name.contains("DESERT") || name.contains("BEACH")) return new Surface(TerrainBlocks.SAND, TerrainBlocks.SAND, biome, SurfaceProfiles.NO_GROUND);
+        if (name.contains("DESERT") || name.contains("BEACH")) return new Surface(TerrainBlocks.SAND, TerrainBlocks.SAND, biome, SurfaceProfiles.NO_GROUND, biome);
         if (name.contains("BADLANDS") || name.contains("MESA")) {
-            return new Surface(new ChunkerBlockIdentifier(ChunkerVanillaBlockType.RED_SAND), new ChunkerBlockIdentifier(ChunkerVanillaBlockType.TERRACOTTA), biome, SurfaceProfiles.NO_GROUND);
+            return new Surface(new ChunkerBlockIdentifier(ChunkerVanillaBlockType.RED_SAND), new ChunkerBlockIdentifier(ChunkerVanillaBlockType.TERRACOTTA), biome, SurfaceProfiles.NO_GROUND, biome);
         }
-        if (name.contains("STONY") || name.contains("PEAK")) return new Surface(TerrainBlocks.STONE, TerrainBlocks.STONE, biome, SurfaceProfiles.NO_GROUND);
-        if (name.contains("MUSHROOM")) return new Surface(new ChunkerBlockIdentifier(ChunkerVanillaBlockType.MYCELIUM), TerrainBlocks.DIRT, biome, SurfaceProfiles.NO_GROUND);
-        return new Surface(TerrainBlocks.GRASS_BLOCK, TerrainBlocks.DIRT, biome, SurfaceProfiles.NO_GROUND);
+        if (name.contains("STONY") || name.contains("PEAK")) return new Surface(TerrainBlocks.STONE, TerrainBlocks.STONE, biome, SurfaceProfiles.NO_GROUND, biome);
+        if (name.contains("MUSHROOM")) return new Surface(new ChunkerBlockIdentifier(ChunkerVanillaBlockType.MYCELIUM), TerrainBlocks.DIRT, biome, SurfaceProfiles.NO_GROUND, biome);
+        return new Surface(TerrainBlocks.GRASS_BLOCK, TerrainBlocks.DIRT, biome, SurfaceProfiles.NO_GROUND, biome);
     }
 
     private Surface surfaceOfCell(int cx, int cz) {
         int i = cellIndex.get(cellKey(cx, cz));
         if (i != UNKNOWN) {
             if (distance[i] == Integer.MAX_VALUE) return null;
-            return new Surface(profiles.block(labelTop[i]), profiles.block(labelFiller[i]), profiles.biome(labelBiome[i]), labelWaterTop[i]);
+            return new Surface(profiles.block(labelTop[i]), profiles.block(labelFiller[i]), profiles.biome(labelBiome[i]), labelWaterTop[i],
+                    profiles.biome(landBiome[i]));
         }
         SurfaceProfiles.Profile profile = profiles.get(cx >> 2, cz >> 2);
         if (profile == null) return null;
         int sample = ((cz & 3) << 2) | (cx & 3);
         if (profile.ground()[sample] == SurfaceProfiles.NO_GROUND) return null;
+        ChunkerBiome biome = profiles.biome(profile.biome()[sample]);
+        ChunkerBiome land = biome;
+        if (isWatery(biome) || profile.water(sample)) {
+            // A written water cell: borrow the land biome of the nearest generated cell
+            int own = nearestCell(cx, cz);
+            land = own == UNKNOWN ? profiles.biome(profiles.biomeId(ChunkerBiome.ChunkerVanillaBiome.PLAINS)) : profiles.biome(landBiome[own]);
+        }
         return new Surface(profiles.block(profile.top()[sample]), profiles.block(profile.filler()[sample]),
-                profiles.biome(profile.biome()[sample]), profile.waterTop()[sample]);
+                biome, profile.waterTop()[sample], land);
+    }
+
+    /**
+     * The biome of a generated column: dry land never gets a sea / river biome (it takes the nearest land's biome),
+     * and land that ended up deep under water becomes ocean.
+     */
+    private static ChunkerBiome columnBiome(Surface surface, boolean underwater, int depth) {
+        if (!underwater) return isWatery(surface.biome()) ? surface.landBiome() : surface.biome();
+        if (surface.water() || isWatery(surface.biome())) return surface.biome();
+        if (depth < 5) return surface.landBiome(); // A pond or shallow lake
+        String land = surface.landBiome().toString().toUpperCase(java.util.Locale.ROOT);
+        boolean cold = land.contains("SNOW") || land.contains("FROZEN") || land.contains("ICE") || land.contains("GROVE");
+        return cold ? ChunkerBiome.ChunkerVanillaBiome.FROZEN_OCEAN : ChunkerBiome.ChunkerVanillaBiome.OCEAN;
+    }
+
+    /**
+     * A generated cell next to a cell (or the cell itself), or {@link #UNKNOWN}.
+     */
+    private int nearestCell(int cx, int cz) {
+        for (int radius = 0; radius <= 2; radius++) {
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    int i = cellIndex.get(cellKey(cx + dx, cz + dz));
+                    if (i != UNKNOWN) return i;
+                }
+            }
+        }
+        return UNKNOWN;
     }
 
     /**
@@ -551,7 +654,7 @@ public class SeamGenerator {
      * The water surface for a generated column, or {@link SurfaceProfiles#NO_GROUND}. Water at the edge of a written
      * neighbour carries on into the seam at the same level (which may be above sea level for lakes and rivers).
      */
-    private int waterTopAt(int wx, int wz, Surface surface) {
+    private int waterTopAt(int wx, int wz, Surface surface, int height) {
         int chunkX = wx >> 4, chunkZ = wz >> 4, x = wx & 15, z = wz & 15;
         int best = SurfaceProfiles.NO_GROUND, bestDistance = WATER_EDGE_BLOCKS;
         int[][] candidates = {
@@ -568,11 +671,15 @@ public class SeamGenerator {
             bestDistance = candidate[4];
         }
         if (best != SurfaceProfiles.NO_GROUND) return best;
-        if (!surface.water()) return SurfaceProfiles.NO_GROUND;
-        // Further out, only sea level water carries on: a lake above sea level sits in a hollow of the world it came
-        // from, and the seam's own terrain has no such hollow to hold it
+        // Further out, like natural generation, any ground below sea level is under water (seas, lakes and ponds).
+        // A lake above sea level sits in a hollow of the world it came from, which the seam has no copy of.
         int seaTop = settings.getSeaLevel() - 1;
-        return Math.min(surface.waterTop(), seaTop);
+        // Old worlds' seas sit a block higher (y=63 before 1.18): carry on whichever sea level the nearest sea had
+        int i = cellIndex.get(cellKey(wx >> 2, wz >> 2));
+        if (i != UNKNOWN && labelWaterTop[i] != SurfaceProfiles.NO_GROUND && Math.abs(labelWaterTop[i] - seaTop) <= 2) {
+            seaTop = labelWaterTop[i];
+        }
+        return height < seaTop ? seaTop : SurfaceProfiles.NO_GROUND;
     }
 
     /**
@@ -622,7 +729,7 @@ public class SeamGenerator {
                     Surface surface = surfaceAt(wx, wz);
                     if (x >= 0 && x <= 15 && z >= 0 && z <= 15) surfaces[x][z] = surface;
                     int h = generatedHeight(wx, wz, minY);
-                    int waterTop = waterTopAt(wx, wz, surface);
+                    int waterTop = waterTopAt(wx, wz, surface, h);
                     grid[gx][gz] = h;
                     gridWater[gx][gz] = waterTop != SurfaceProfiles.NO_GROUND && h < waterTop ? waterTop : SurfaceProfiles.NO_GROUND;
                 } else {
@@ -727,7 +834,7 @@ public class SeamGenerator {
                 top[x][z] = topBlock;
                 filler[x][z] = fillerBlock;
                 if ((x & 3) == 1 && (z & 3) == 1) {
-                    cellBiomes[x >> 2][z >> 2] = surface.biome();
+                    cellBiomes[x >> 2][z >> 2] = columnBiome(surface, underwater, underwater ? waterTop - h : 0);
                 }
             }
         }
@@ -745,7 +852,7 @@ public class SeamGenerator {
         column.setBiomes(buildBiomes(cellBiomes, belowZero ? 24 : 16));
 
         // Plants and trees
-        decorate(column, chunkX, chunkZ, heights, top, wet, cellBiomes);
+        decorate(column, chunkX, chunkZ, heights, top, wet, columnWaterTop, cellBiomes);
         column.setLightPopulated(false);
         column.setBlendingHint(settings.isJavaBlendingHints());
         return column;
@@ -889,8 +996,25 @@ public class SeamGenerator {
      * @param desert   whether to place cacti / dead bushes on sand.
      * @param snow     whether to cover the surface with snow.
      */
+    /**
+     * Extra features a biome has.
+     *
+     * @param secondLog    a second tree type mixed in (or null).
+     * @param secondLeaves its leaves.
+     * @param secondShare  the share of trees that are the second type.
+     * @param boulders     mossy boulders per column.
+     * @param bushes       small bushes per column.
+     * @param lilyPads     lily pads per shallow water column.
+     * @param flowerPatchy whether flowers grow in patches (meadows, plains) rather than evenly.
+     */
+    record Style(@org.jetbrains.annotations.Nullable ChunkerBlockIdentifier secondLog,
+                 @org.jetbrains.annotations.Nullable ChunkerBlockIdentifier secondLeaves, double secondShare,
+                 double boulders, double bushes, double lilyPads, boolean flowerPatchy) {
+        static final Style NONE = new Style(null, null, 0, 0, 0, 0, false);
+    }
+
     record Vegetation(double trees, double grass, double flowers, ChunkerBlockIdentifier log, ChunkerBlockIdentifier leaves,
-                      boolean conifer, boolean desert, boolean snow) {
+                      boolean conifer, boolean desert, boolean snow, Style style) {
     }
 
     private static final ChunkerBlockIdentifier OAK_LOG = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.OAK_LOG);
@@ -899,64 +1023,148 @@ public class SeamGenerator {
     private static final ChunkerBlockIdentifier BIRCH_LEAVES = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.BIRCH_LEAVES);
     private static final ChunkerBlockIdentifier SPRUCE_LOG = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.SPRUCE_LOG);
     private static final ChunkerBlockIdentifier SPRUCE_LEAVES = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.SPRUCE_LEAVES);
+    private static final ChunkerBlockIdentifier JUNGLE_LOG = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.JUNGLE_LOG);
+    private static final ChunkerBlockIdentifier JUNGLE_LEAVES = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.JUNGLE_LEAVES);
+    private static final ChunkerBlockIdentifier DARK_OAK_LOG = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.DARK_OAK_LOG);
+    private static final ChunkerBlockIdentifier DARK_OAK_LEAVES = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.DARK_OAK_LEAVES);
+    private static final ChunkerBlockIdentifier ACACIA_LOG = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.ACACIA_LOG);
+    private static final ChunkerBlockIdentifier ACACIA_LEAVES = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.ACACIA_LEAVES);
+    private static final ChunkerBlockIdentifier CHERRY_LOG = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.CHERRY_LOG);
+    private static final ChunkerBlockIdentifier CHERRY_LEAVES = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.CHERRY_LEAVES);
+    private static final ChunkerBlockIdentifier SEAGRASS = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.SEAGRASS);
+    private static final ChunkerBlockIdentifier LILY_PAD = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.LILY_PAD);
+    private static final ChunkerBlockIdentifier SUGAR_CANE = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.SUGAR_CANE);
+    private static final ChunkerBlockIdentifier MOSSY_COBBLESTONE = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.MOSSY_COBBLESTONE);
+    private static final ChunkerBlockIdentifier COBBLESTONE = new ChunkerBlockIdentifier(ChunkerVanillaBlockType.COBBLESTONE);
 
     /**
-     * Pick the decoration style for a biome from its name.
+     * Pick the decoration for a biome from its name, roughly matching natural generation's densities.
      */
     static Vegetation vegetation(ChunkerBiome biome) {
         String name = biome.toString().toUpperCase(java.util.Locale.ROOT);
-        if (name.contains("OCEAN") || name.contains("RIVER") || name.contains("BEACH") || name.contains("SHORE")
-                || name.contains("MUSHROOM") || name.contains("VOID") || name.contains("NETHER") || name.contains("END")
-                || name.contains("PEAK") || name.contains("STONY") || name.contains("DEEP")) {
-            return new Vegetation(0, 0, 0, OAK_LOG, OAK_LEAVES, false, false, name.contains("FROZEN") || name.contains("PEAK"));
-        }
         boolean snow = name.contains("SNOW") || name.contains("FROZEN") || name.contains("ICE") || name.contains("GROVE");
+        if (name.contains("OCEAN") || name.contains("RIVER") || name.contains("BEACH") || name.contains("SHORE")
+                || name.contains("VOID") || name.contains("NETHER") || name.contains("END")
+                || name.contains("PEAK") || name.contains("STONY") || name.contains("DEEP")) {
+            return new Vegetation(0, 0.02, 0, OAK_LOG, OAK_LEAVES, false, false, snow || name.contains("PEAK"), Style.NONE);
+        }
+        if (name.contains("MUSHROOM")) return new Vegetation(0, 0, 0, OAK_LOG, OAK_LEAVES, false, false, false, Style.NONE);
         if (name.contains("DESERT") || name.contains("BADLANDS") || name.contains("MESA")) {
-            return new Vegetation(0, 0.01, 0, OAK_LOG, OAK_LEAVES, false, true, false);
+            return new Vegetation(0, 0.01, 0, OAK_LOG, OAK_LEAVES, false, true, false, Style.NONE);
         }
-        if (name.contains("TAIGA") || name.contains("GROVE") || name.contains("SNOWY") || name.contains("SPRUCE")) {
-            return new Vegetation(name.contains("SLOPES") || name.contains("PLAINS") ? 0.004 : 0.016, 0.08, 0.002, SPRUCE_LOG, SPRUCE_LEAVES, true, false, snow);
+        if (name.contains("TAIGA") || name.contains("GROVE") || name.contains("SNOWY") || name.contains("SPRUCE") || name.contains("PINE")) {
+            boolean sparse = name.contains("SLOPES") || name.contains("PLAINS");
+            return new Vegetation(sparse ? 0.004 : 0.03, 0.2, 0.004, SPRUCE_LOG, SPRUCE_LEAVES, true, false, snow,
+                    new Style(null, null, 0, sparse ? 0 : 0.0012, 0, 0, false));
         }
-        if (name.contains("BIRCH")) return new Vegetation(0.018, 0.12, 0.01, BIRCH_LOG, BIRCH_LEAVES, false, false, false);
-        if (name.contains("FOREST") || name.contains("JUNGLE") || name.contains("SWAMP") || name.contains("WOOD")) {
-            return new Vegetation(0.02, 0.15, 0.01, OAK_LOG, OAK_LEAVES, false, false, false);
+        if (name.contains("CHERRY")) {
+            return new Vegetation(0.012, 0.3, 0.06, CHERRY_LOG, CHERRY_LEAVES, false, false, false, new Style(null, null, 0, 0, 0, 0, true));
         }
-        if (name.contains("SAVANNA")) return new Vegetation(0.004, 0.25, 0.002, OAK_LOG, OAK_LEAVES, false, false, false);
-        if (name.contains("MEADOW") || name.contains("FLOWER") || name.contains("SUNFLOWER")) {
-            return new Vegetation(0.002, 0.25, 0.08, OAK_LOG, OAK_LEAVES, false, false, false);
+        if (name.contains("JUNGLE")) {
+            return new Vegetation(name.contains("SPARSE") ? 0.015 : 0.05, 0.4, 0.01, JUNGLE_LOG, JUNGLE_LEAVES, false, false, false,
+                    new Style(OAK_LOG, OAK_LEAVES, 0.3, 0, 0.02, 0, false));
         }
-        // Plains and anything else
-        return new Vegetation(0.003, 0.18, 0.02, OAK_LOG, OAK_LEAVES, false, false, snow);
+        if (name.contains("DARK") || name.contains("ROOFED")) {
+            return new Vegetation(0.05, 0.15, 0.005, DARK_OAK_LOG, DARK_OAK_LEAVES, false, false, false,
+                    new Style(BIRCH_LOG, BIRCH_LEAVES, 0.15, 0.0008, 0.004, 0, false));
+        }
+        if (name.contains("BIRCH")) {
+            return new Vegetation(0.03, 0.2, 0.012, BIRCH_LOG, BIRCH_LEAVES, false, false, false, new Style(null, null, 0, 0.0005, 0.002, 0, false));
+        }
+        if (name.contains("SWAMP") || name.contains("MANGROVE")) {
+            return new Vegetation(0.012, 0.15, 0.01, OAK_LOG, OAK_LEAVES, false, false, false, new Style(null, null, 0, 0, 0.003, 0.08, false));
+        }
+        if (name.contains("FOREST") || name.contains("WOOD")) {
+            boolean flower = name.contains("FLOWER");
+            return new Vegetation(flower ? 0.02 : 0.035, 0.2, flower ? 0.12 : 0.012, OAK_LOG, OAK_LEAVES, false, false, false,
+                    new Style(BIRCH_LOG, BIRCH_LEAVES, 0.2, 0.0006, 0.003, 0, flower));
+        }
+        if (name.contains("SAVANNA")) {
+            return new Vegetation(0.004, 0.45, 0.004, ACACIA_LOG, ACACIA_LEAVES, false, false, false, new Style(OAK_LOG, OAK_LEAVES, 0.2, 0, 0.001, 0, false));
+        }
+        if (name.contains("MEADOW") || name.contains("SUNFLOWER")) {
+            return new Vegetation(0.001, 0.45, 0.1, OAK_LOG, OAK_LEAVES, false, false, false, new Style(BIRCH_LOG, BIRCH_LEAVES, 0.5, 0, 0, 0, true));
+        }
+        if (name.contains("HILLS") || name.contains("WINDSWEPT") || name.contains("MOUNTAIN")) {
+            return new Vegetation(0.006, 0.2, 0.004, SPRUCE_LOG, SPRUCE_LEAVES, true, false, snow, new Style(OAK_LOG, OAK_LEAVES, 0.5, 0.0015, 0, 0, false));
+        }
+        // Plains and anything else: lots of grass, the odd tree and patches of flowers
+        return new Vegetation(0.0015, 0.4, 0.03, OAK_LOG, OAK_LEAVES, false, false, snow, new Style(null, null, 0, 0, 0.0008, 0.01, true));
     }
 
     private void decorate(ChunkerColumn column, int chunkX, int chunkZ, int[][] heights, ChunkerBlockIdentifier[][] top,
-                          boolean[][] wet, ChunkerBiome[][] cellBiomes) {
+                          boolean[][] wet, int[][] waterTop, ChunkerBiome[][] cellBiomes) {
         int baseX = chunkX << 4, baseZ = chunkZ << 4;
         boolean[][] occupied = new boolean[16][16];
 
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
-                if (wet[x][z] || occupied[x][z]) continue;
+                if (occupied[x][z]) continue;
                 int h = heights[x + 1][z + 1];
                 ChunkerBiome biome = cellBiomes[x >> 2][z >> 2];
                 Vegetation vegetation = blendVegetation(vegetation(biome == null ? defaultBiome : biome), worldX(baseX, x), worldX(baseZ, z));
+                Style style = vegetation.style();
                 ChunkerVanillaBlockType ground = top[x][z].getType() instanceof ChunkerVanillaBlockType vanilla ? vanilla : null;
                 int worldX = baseX + x, worldZ = baseZ + z;
                 double roll = noise.random(SALT_PLANTS, worldX, h, worldZ);
 
-                if (ground == ChunkerVanillaBlockType.GRASS_BLOCK || ground == ChunkerVanillaBlockType.PODZOL) {
-                    // Trees need room: they're kept inside the chunk and on flat ground
+                if (wet[x][z]) {
+                    // Water: seagrass on the bottom, lily pads on shallow still water
+                    int depth = waterTop[x][z] - h;
+                    if (depth >= 2 && roll < 0.18 && (ground == ChunkerVanillaBlockType.SAND || ground == ChunkerVanillaBlockType.GRAVEL
+                            || ground == ChunkerVanillaBlockType.DIRT || ground == ChunkerVanillaBlockType.CLAY)) {
+                        column.setBlock(x, h + 1, z, SEAGRASS);
+                    } else if (depth <= 2 && roll > 1 - style.lilyPads() && !vegetation.snow()) {
+                        column.setBlock(x, waterTop[x][z] + 1, z, LILY_PAD);
+                    }
+                    continue;
+                }
+
+                boolean soil = ground == ChunkerVanillaBlockType.GRASS_BLOCK || ground == ChunkerVanillaBlockType.PODZOL;
+                if ((soil || ground == ChunkerVanillaBlockType.SAND || ground == ChunkerVanillaBlockType.DIRT) && besideWater(wet, waterTop, x, z, h)
+                        && !vegetation.snow() && roll < 0.12) {
+                    // Sugar cane along the water's edge
+                    int height = 1 + (int) (noise.random(SALT_PLANTS + 3, worldX, 0, worldZ) * 3);
+                    for (int y = 1; y <= height; y++) column.setBlock(x, h + y, z, SUGAR_CANE);
+                    occupied[x][z] = true;
+                    continue;
+                }
+
+                if (soil) {
                     boolean flat = Math.abs(heights[x][z + 1] - h) <= 1 && Math.abs(heights[x + 2][z + 1] - h) <= 1
                             && Math.abs(heights[x + 1][z] - h) <= 1 && Math.abs(heights[x + 1][z + 2] - h) <= 1;
-                    if (flat && x >= 2 && x <= 13 && z >= 2 && z <= 13
-                            && noise.random(SALT_TREES, worldX, 0, worldZ) < vegetation.trees()) {
-                        placeTree(column, x, h + 1, z, vegetation, worldX, worldZ, occupied);
+                    boolean inside = x >= 2 && x <= 13 && z >= 2 && z <= 13;
+                    // Trees need room: they're kept inside the chunk and on flat ground. Density varies in groves.
+                    double grove = 0.55 + 0.9 * (noise.noise2(SALT_TREES + 5, worldX / 48.0, worldZ / 48.0) * 0.5 + 0.5);
+                    if (flat && inside && noise.random(SALT_TREES, worldX, 0, worldZ) < vegetation.trees() * grove) {
+                        boolean second = style.secondLog() != null && noise.random(SALT_TREES + 3, worldX, 0, worldZ) < style.secondShare();
+                        ChunkerBlockIdentifier log = second ? style.secondLog() : vegetation.log();
+                        ChunkerBlockIdentifier leaves = second ? style.secondLeaves() : vegetation.leaves();
+                        placeTree(column, x, h + 1, z, log, leaves, vegetation.conifer() && !second, worldX, worldZ, occupied);
                         continue;
                     }
-                    if (roll < vegetation.flowers()) {
-                        column.setBlock(x, h + 1, z, FLOWERS[(int) (noise.random(SALT_PLANTS + 1, worldX, 0, worldZ) * FLOWERS.length)]);
-                    } else if (roll < vegetation.flowers() + vegetation.grass()) {
-                        column.setBlock(x, h + 1, z, vegetation.conifer() && roll < vegetation.grass() * 0.4 ? FERN : SHORT_GRASS);
+                    if (flat && x >= 1 && x <= 14 && z >= 1 && z <= 14 && noise.random(SALT_TREES + 4, worldX, 0, worldZ) < style.boulders()) {
+                        placeBoulder(column, x, h, z, worldX, worldZ, occupied);
+                        continue;
+                    }
+                    if (flat && x >= 1 && x <= 14 && z >= 1 && z <= 14 && noise.random(SALT_TREES + 6, worldX, 0, worldZ) < style.bushes()) {
+                        placeBush(column, x, h + 1, z, vegetation.leaves(), occupied);
+                        continue;
+                    }
+
+                    double flowers = vegetation.flowers();
+                    if (style.flowerPatchy()) {
+                        // Flowers come in patches of one kind, like natural flower patches
+                        double patch = noise.noise2(SALT_PLANTS + 4, worldX / 14.0, worldZ / 14.0);
+                        flowers = patch > 0.35 ? Math.min(0.5, flowers * 8) : flowers * 0.1;
+                    }
+                    if (roll < flowers) {
+                        int kind = style.flowerPatchy()
+                                ? (int) ((noise.noise2(SALT_PLANTS + 5, worldX / 30.0, worldZ / 30.0) * 0.5 + 0.5) * FLOWERS.length)
+                                : (int) (noise.random(SALT_PLANTS + 1, worldX, 0, worldZ) * FLOWERS.length);
+                        column.setBlock(x, h + 1, z, FLOWERS[Math.max(0, Math.min(FLOWERS.length - 1, kind))]);
+                    } else if (roll < flowers + vegetation.grass()) {
+                        column.setBlock(x, h + 1, z, vegetation.conifer() && roll < flowers + vegetation.grass() * 0.4 ? FERN : SHORT_GRASS);
                     } else if (vegetation.snow()) {
                         column.setBlock(x, h + 1, z, SNOW_LAYER);
                     }
@@ -977,6 +1185,49 @@ public class SeamGenerator {
         }
     }
 
+    /**
+     * Whether a dry column sits right at the edge of water (level with its surface), where sugar cane grows.
+     */
+    private static boolean besideWater(boolean[][] wet, int[][] waterTop, int x, int z, int h) {
+        for (int[] n : NEIGHBOURS) {
+            int nx = x + n[0], nz = z + n[1];
+            if (nx < 0 || nz < 0 || nx > 15 || nz > 15) continue;
+            if (wet[nx][nz] && waterTop[nx][nz] == h) return true;
+        }
+        return false;
+    }
+
+    /**
+     * A small mossy boulder, partly sunk into the ground.
+     */
+    private void placeBoulder(ChunkerColumn column, int x, int h, int z, int worldX, int worldZ, boolean[][] occupied) {
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                occupied[x + dx][z + dz] = true;
+                boolean corner = dx != 0 && dz != 0;
+                int top = corner ? 0 : 1;
+                if (dx == 0 && dz == 0) top = 2;
+                for (int y = 0; y <= top; y++) {
+                    if (corner && noise.random(SALT_TREES + 7, worldX + dx, y, worldZ + dz) < 0.5) continue;
+                    column.setBlock(x + dx, h + y, z + dz, noise.random(SALT_TREES + 8, worldX + dx, y, worldZ + dz) < 0.6 ? MOSSY_COBBLESTONE : COBBLESTONE);
+                }
+            }
+        }
+    }
+
+    /**
+     * A bush: a log stump wrapped in leaves (the log stops the leaves decaying).
+     */
+    private void placeBush(ChunkerColumn column, int x, int y, int z, ChunkerBlockIdentifier leaves, boolean[][] occupied) {
+        column.setBlock(x, y, z, OAK_LOG);
+        for (int[] n : NEIGHBOURS) {
+            if (column.getBlock(x + n[0], y, z + n[1]).isAir()) column.setBlock(x + n[0], y, z + n[1], leaves);
+            occupied[x + n[0]][z + n[1]] = true;
+        }
+        column.setBlock(x, y + 1, z, leaves);
+        occupied[x][z] = true;
+    }
+
     private static int worldX(int base, int local) {
         return base + local;
     }
@@ -989,19 +1240,20 @@ public class SeamGenerator {
         if (i == UNKNOWN || distance[i] == Integer.MAX_VALUE) return biome;
         double t = Math.min(1.0, distance[i] * 4.0 / VEGETATION_FADE_BLOCKS);
         // A canopy covers ~20 columns per tree
-        double edgeTrees = labelTrees[i] / 20.0;
-        double edgePlants = labelPlants[i];
+        double edgeTrees = landTrees[i] / 20.0;
+        double edgePlants = landPlants[i];
         return new Vegetation(
                 edgeTrees + (biome.trees() - edgeTrees) * t,
                 edgePlants * 0.85 + (biome.grass() - edgePlants * 0.85) * t,
                 edgePlants * 0.15 * (1 - t) + biome.flowers() * t,
-                biome.log(), biome.leaves(), biome.conifer(), biome.desert(), biome.snow()
+                biome.log(), biome.leaves(), biome.conifer(), biome.desert(), biome.snow(), biome.style()
         );
     }
 
     private static final double VEGETATION_FADE_BLOCKS = 96;
 
-    private void placeTree(ChunkerColumn column, int x, int y, int z, Vegetation vegetation, int worldX, int worldZ, boolean[][] occupied) {
+    private void placeTree(ChunkerColumn column, int x, int y, int z, ChunkerBlockIdentifier log, ChunkerBlockIdentifier leaves,
+                           boolean conifer, int worldX, int worldZ, boolean[][] occupied) {
         int trunk = 4 + (int) (noise.random(SALT_TREES + 1, worldX, 0, worldZ) * 3);
         for (int dx = -2; dx <= 2; dx++) {
             for (int dz = -2; dz <= 2; dz++) {
@@ -1009,23 +1261,23 @@ public class SeamGenerator {
             }
         }
 
-        if (vegetation.conifer()) {
+        if (conifer) {
             // Spruce: narrowing rings of leaves up the trunk
             trunk += 2;
             for (int level = 2; level <= trunk + 1; level++) {
                 int radius = level == trunk + 1 ? 0 : ((trunk - level) % 2 == 0 ? 2 : 1);
                 if (level > trunk - 1) radius = Math.min(radius, 1);
-                leafLayer(column, x, y + level, z, radius, vegetation.leaves(), false, worldX, worldZ);
+                leafLayer(column, x, y + level, z, radius, leaves, false, worldX, worldZ);
             }
         } else {
             // Oak / birch: two wide layers and two narrow layers at the top
-            leafLayer(column, x, y + trunk - 2, z, 2, vegetation.leaves(), true, worldX, worldZ);
-            leafLayer(column, x, y + trunk - 1, z, 2, vegetation.leaves(), true, worldX, worldZ);
-            leafLayer(column, x, y + trunk, z, 1, vegetation.leaves(), true, worldX, worldZ);
-            leafLayer(column, x, y + trunk + 1, z, 1, vegetation.leaves(), false, worldX, worldZ);
+            leafLayer(column, x, y + trunk - 2, z, 2, leaves, true, worldX, worldZ);
+            leafLayer(column, x, y + trunk - 1, z, 2, leaves, true, worldX, worldZ);
+            leafLayer(column, x, y + trunk, z, 1, leaves, true, worldX, worldZ);
+            leafLayer(column, x, y + trunk + 1, z, 1, leaves, false, worldX, worldZ);
         }
         for (int i = 0; i < trunk; i++) {
-            column.setBlock(x, y + i, z, vegetation.log());
+            column.setBlock(x, y + i, z, log);
         }
         // The block under a tree is dirt
         column.setBlock(x, y - 1, z, TerrainBlocks.DIRT);
